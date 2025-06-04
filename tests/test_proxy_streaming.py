@@ -24,11 +24,11 @@ def test_proxy_streaming_basic_think_tag_removal(client, mocker, caplog, enable_
     mocker.patch.dict(os.environ, {
         "LLM_PARAMS": "model=test-model,enable_think_tag_filtering=true"
     }, clear=True)
-    mocker.patch('cot_proxy.DEFAULT_THINK_START_TAG', DEFAULT_CODE_START_TAG)
-    mocker.patch('cot_proxy.DEFAULT_THINK_END_TAG', DEFAULT_CODE_END_TAG)
+    # mocker.patch('cot_proxy.DEFAULT_THINK_START_TAG', DEFAULT_CODE_START_TAG)
+    # mocker.patch('cot_proxy.DEFAULT_THINK_END_TAG', DEFAULT_CODE_END_TAG)
 
     target_response_parts = ["This is ", DEFAULT_CODE_START_TAG, "some thoughts", DEFAULT_CODE_END_TAG, " a stream."]
-    
+
     mock_api_response = MagicMock()
     mock_api_response.iter_content.return_value = generate_streaming_chunks(target_response_parts)
     mock_api_response.status_code = 200
@@ -40,14 +40,14 @@ def test_proxy_streaming_basic_think_tag_removal(client, mocker, caplog, enable_
     with patch('requests.request', return_value=mock_api_response) as mock_requests_call:
         request_body = {"model": "test-model", "stream": True, "messages": [{"role": "user", "content": "Hello stream"}]}
         response = client.post("/v1/chat/completions", json=request_body)
-    
+
         assert response.status_code == 200
         assert response.is_streamed
-        
+
         streamed_data = response.data
         expected_output = "This is  a stream.".encode('utf-8')
         assert streamed_data == expected_output
-        
+
         mock_requests_call.assert_called_once()
         args, kwargs = mock_requests_call.call_args
         assert kwargs.get('url') == f"{mocked_target_base}v1/chat/completions"
@@ -62,7 +62,7 @@ def test_proxy_streaming_llm_params_custom_tags(client, mocker, caplog):
     """Test streaming with custom think tags from LLM_PARAMS."""
     custom_start = "<custom_s>"
     custom_end = "</custom_e>"
-    
+
     mocked_target_base = "http://fake-target-stream/"
     mocker.patch('cot_proxy.TARGET_BASE_URL', mocked_target_base)
     mocker.patch.dict(os.environ, {
@@ -71,7 +71,7 @@ def test_proxy_streaming_llm_params_custom_tags(client, mocker, caplog):
     # No need to patch cot_proxy.DEFAULT_THINK_START/END_TAG as LLM_PARAMS model-specific should override
 
     target_response_parts = ["Data: ", custom_start, "secret stuff", custom_end, " more data."]
-    
+
     mock_api_response = MagicMock()
     mock_api_response.iter_content.return_value = generate_streaming_chunks(target_response_parts)
     mock_api_response.status_code = 200
@@ -82,14 +82,14 @@ def test_proxy_streaming_llm_params_custom_tags(client, mocker, caplog):
     with patch('requests.request', return_value=mock_api_response):
         request_body = {"model": "my-streaming-model", "stream": True, "messages": [{"role": "user", "content": "Stream custom"}]}
         response = client.post("/v1/chat/completions", json=request_body)
-    
+
         assert response.status_code == 200
         assert response.is_streamed
-        
+
         streamed_data = response.data
         expected_output = "Data:  more data.".encode('utf-8')
         assert streamed_data == expected_output
-    
+
     expected_log = f"Using think tags for model 'my-streaming-model': START='{custom_start}', END='{custom_end}'"
     assert expected_log in caplog.text
 
@@ -106,12 +106,12 @@ def test_proxy_streaming_global_env_tags(client, mocker, caplog):
         "THINK_END_TAG": env_end_tag,
         "LLM_PARAMS": "model=another-model,enable_think_tag_filtering=true"
     }, clear=True)
-    mocker.patch('cot_proxy.DEFAULT_THINK_START_TAG', env_start_tag)
-    mocker.patch('cot_proxy.DEFAULT_THINK_END_TAG', env_end_tag)
+    # mocker.patch('cot_proxy.DEFAULT_THINK_START_TAG', env_start_tag)
+    # mocker.patch('cot_proxy.DEFAULT_THINK_END_TAG', env_end_tag)
 
 
     target_response_parts = ["Info: ", env_start_tag, "env thoughts", env_end_tag, " end info."]
-    
+
     mock_api_response = MagicMock()
     mock_api_response.iter_content.return_value = generate_streaming_chunks(target_response_parts)
     mock_api_response.status_code = 200
@@ -122,10 +122,10 @@ def test_proxy_streaming_global_env_tags(client, mocker, caplog):
     with patch('requests.request', return_value=mock_api_response):
         request_body = {"model": "another-model", "stream": True, "messages": [{"role": "user", "content": "Stream env tags"}]}
         response = client.post("/v1/chat/completions", json=request_body)
-    
+
         assert response.status_code == 200
         assert response.is_streamed
-        
+
         streamed_data = response.data
         expected_output = "Info:  end info.".encode('utf-8')
         assert streamed_data == expected_output
@@ -141,8 +141,8 @@ def test_proxy_streaming_tag_split_across_chunks(client, mocker, caplog):
     mocker.patch.dict(os.environ, {
         "LLM_PARAMS": "model=split-model,enable_think_tag_filtering=true"
     }, clear=True)
-    mocker.patch('cot_proxy.DEFAULT_THINK_START_TAG', DEFAULT_CODE_START_TAG)
-    mocker.patch('cot_proxy.DEFAULT_THINK_END_TAG', DEFAULT_CODE_END_TAG)
+    # mocker.patch('cot_proxy.DEFAULT_THINK_START_TAG', DEFAULT_CODE_START_TAG)
+    # mocker.patch('cot_proxy.DEFAULT_THINK_END_TAG', DEFAULT_CODE_END_TAG)
 
 
     chunks_from_target = [
@@ -152,7 +152,7 @@ def test_proxy_streaming_tag_split_across_chunks(client, mocker, caplog):
         b"ink>",
         b" Part2"
     ]
-    
+
     mock_api_response = MagicMock()
     # IMPORTANT: iter_content should yield byte chunks directly, not a generator of generators
     mock_api_response.iter_content.return_value = (c for c in chunks_from_target) # Make it a generator
@@ -164,14 +164,14 @@ def test_proxy_streaming_tag_split_across_chunks(client, mocker, caplog):
     with patch('requests.request', return_value=mock_api_response):
         request_body = {"model": "split-model", "stream": True, "messages": [{"role": "user", "content": "Stream split"}]}
         response = client.post("/v1/chat/completions", json=request_body)
-    
+
         assert response.status_code == 200
         assert response.is_streamed
-        
+
         streamed_data = response.data
         expected_output = b"Part1  Part2"
         assert streamed_data == expected_output
-    
+
     expected_log = f"Using think tags for model 'split-model': START='{DEFAULT_CODE_START_TAG}', END='{DEFAULT_CODE_END_TAG}'"
     assert expected_log in caplog.text
 
@@ -184,8 +184,8 @@ def test_proxy_streaming_client_disconnect(client, mocker, caplog):
     mocked_target_base = "http://fake-target-stream/"
     mocker.patch('cot_proxy.TARGET_BASE_URL', mocked_target_base)
     mocker.patch.dict(os.environ, {}, clear=True)
-    mocker.patch('cot_proxy.DEFAULT_THINK_START_TAG', DEFAULT_CODE_START_TAG) # Ensure consistent tags
-    mocker.patch('cot_proxy.DEFAULT_THINK_END_TAG', DEFAULT_CODE_END_TAG)
+    # mocker.patch('cot_proxy.DEFAULT_THINK_START_TAG', DEFAULT_CODE_START_TAG) # Ensure consistent tags
+    # mocker.patch('cot_proxy.DEFAULT_THINK_END_TAG', DEFAULT_CODE_END_TAG)
 
 
     # Mock the target's response stream to simulate client disconnect
@@ -204,10 +204,10 @@ def test_proxy_streaming_client_disconnect(client, mocker, caplog):
 
     with patch('requests.request', return_value=mock_api_response) as mock_requests_call:
         request_body = {"model": "disconnect-model", "stream": True, "messages": [{"role": "user", "content": "Stream disconnect"}]}
-        
+
         # Make the request
         response = client.post("/v1/chat/completions", json=request_body)
-        
+
         # The initial response (headers) should be 200 OK
         assert response.status_code == 200
         assert response.is_streamed

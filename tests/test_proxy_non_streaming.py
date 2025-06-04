@@ -31,7 +31,7 @@ def test_proxy_non_streaming_basic_get(client, mocker):
     assert proxy_response.json == target_response_content
     assert proxy_response.headers.get("X-Custom-Header") == "TargetValue"
     # Content-Length might be different due to Flask test client or re-encoding, so usually not asserted directly unless critical.
-    
+
     # Verify that the request to the target was made correctly
     assert len(responses.calls) == 1
     call = responses.calls[0]
@@ -82,8 +82,8 @@ def test_proxy_non_streaming_think_tag_removal_default_tags(client, mocker, capl
         "LLM_PARAMS": "model=nonstream-model,enable_think_tag_filtering=true"
     }, clear=True)
     # Ensure module defaults are the code defaults for this test
-    mocker.patch('cot_proxy.DEFAULT_THINK_START_TAG', DEFAULT_CODE_START_TAG)
-    mocker.patch('cot_proxy.DEFAULT_THINK_END_TAG', DEFAULT_CODE_END_TAG)
+    # mocker.patch('cot_proxy.DEFAULT_THINK_START_TAG', DEFAULT_CODE_START_TAG)
+    # mocker.patch('cot_proxy.DEFAULT_THINK_END_TAG', DEFAULT_CODE_END_TAG)
 
     raw_content_from_target = f"Visible {DEFAULT_CODE_START_TAG}secret thoughts{DEFAULT_CODE_END_TAG} content."
     responses.add(
@@ -99,11 +99,11 @@ def test_proxy_non_streaming_think_tag_removal_default_tags(client, mocker, capl
 
     assert proxy_response.status_code == 200
     assert proxy_response.data.decode('utf-8') == "Visible  content."
-    
+
     expected_log = f"Using think tags for model 'nonstream-model': START='{DEFAULT_CODE_START_TAG}', END='{DEFAULT_CODE_END_TAG}'"
     assert expected_log in caplog.text
     assert "Non-streaming response content: Visible  content." in caplog.text
-    
+
 
 @responses.activate
 def test_proxy_non_streaming_think_tag_removal_llm_params_tags(client, mocker, caplog):
@@ -146,8 +146,8 @@ def test_proxy_non_streaming_think_tag_removal_global_env_tags(client, mocker, c
         "LLM_PARAMS": "model=global-env-model,enable_think_tag_filtering=true"
     }, clear=True)
     # Patch module-level defaults so the THINK_TAG env vars are picked up
-    mocker.patch('cot_proxy.DEFAULT_THINK_START_TAG', env_start)
-    mocker.patch('cot_proxy.DEFAULT_THINK_END_TAG', env_end)
+    # mocker.patch('cot_proxy.DEFAULT_THINK_START_TAG', env_start)
+    # mocker.patch('cot_proxy.DEFAULT_THINK_END_TAG', env_end)
 
     raw_content_from_target = f"Prefix {env_start}thoughts{env_end} Suffix."
     responses.add(
@@ -176,8 +176,8 @@ def test_proxy_non_streaming_no_stream_key_in_request(client, mocker, caplog, en
         "LLM_PARAMS": "model=no-stream-key-model,enable_think_tag_filtering=true"
     }, clear=True)
     # Ensure module defaults are the code defaults for this test
-    mocker.patch('cot_proxy.DEFAULT_THINK_START_TAG', DEFAULT_CODE_START_TAG)
-    mocker.patch('cot_proxy.DEFAULT_THINK_END_TAG', DEFAULT_CODE_END_TAG)
+    # mocker.patch('cot_proxy.DEFAULT_THINK_START_TAG', DEFAULT_CODE_START_TAG)
+    # mocker.patch('cot_proxy.DEFAULT_THINK_END_TAG', DEFAULT_CODE_END_TAG)
 
     raw_content_from_target = f"Content {DEFAULT_CODE_START_TAG}stuff{DEFAULT_CODE_END_TAG} end."
     responses.add(
@@ -209,8 +209,8 @@ def test_proxy_non_streaming_no_json_body(client, mocker, caplog, enable_debug):
         "LLM_PARAMS": "model=default,enable_think_tag_filtering=true" # For the second part of the test
     }, clear=True)
     # Ensure module defaults are the code defaults for this test
-    mocker.patch('cot_proxy.DEFAULT_THINK_START_TAG', DEFAULT_CODE_START_TAG)
-    mocker.patch('cot_proxy.DEFAULT_THINK_END_TAG', DEFAULT_CODE_END_TAG)
+    # mocker.patch('cot_proxy.DEFAULT_THINK_START_TAG', DEFAULT_CODE_START_TAG)
+    # mocker.patch('cot_proxy.DEFAULT_THINK_END_TAG', DEFAULT_CODE_END_TAG)
 
     target_response_body = "Simple GET response, no tags involved."
     responses.add(
@@ -226,7 +226,7 @@ def test_proxy_non_streaming_no_json_body(client, mocker, caplog, enable_debug):
     assert proxy_response.status_code == 200
     assert proxy_response.data.decode('utf-8') == target_response_body
     assert proxy_response.headers.get("Content-Type") == "text/plain"
-    
+
     # is_stream is determined by json_body.get('stream', False) if json_body else False
     # So if no json_body, is_stream is False.
     assert "Stream mode: False" in caplog.text
@@ -238,4 +238,3 @@ def test_proxy_non_streaming_no_json_body(client, mocker, caplog, enable_debug):
     # it decodes g.api_response.content.
     # The `effective_think_start_tag` would be the global defaults in this case.
     # So, if the response *did* contain default tags, they *would* be stripped.
-    

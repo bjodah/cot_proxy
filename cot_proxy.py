@@ -1,3 +1,4 @@
+from pydantic import BaseModel, Field
 from flask import Flask, request, Response, stream_with_context, g
 import requests
 import re
@@ -8,11 +9,6 @@ import time
 from typing import Any
 from urllib.parse import urljoin
 import re # Ensure re is available for escaping
-
-# Global default think tags
-# Prioritize environment variables, then hardcoded defaults
-DEFAULT_THINK_START_TAG = os.getenv('THINK_TAG', '<think>')
-DEFAULT_THINK_END_TAG = os.getenv('THINK_END_TAG', '</think>')
 
 # Parameter type definitions
 PARAM_TYPES = {
@@ -162,6 +158,96 @@ def health_check():
             content_type="application/json"
         )
 
+class Cfg(BaseModel):
+    think_tag_start: str = Field(default_factory=lambda: os.getenv('THINK_TAG', '<think>'))
+    think_tag_end: str = Field(default_factory=lambda: os.getenv('THINK_END_TAG', '</think>'))
+    upstream_model_name: str = "default"
+    append_to_last_user_message: str = ""
+    enable_think_tag_filtering: bool = False
+    opts: dict = Field(default_factory=dict)
+
+
+class Ctx(BaseModel):
+    effective_think_start_tag: str = Field(default_factory=lambda: os.getenv('THINK_TAG', '<think>'))
+    effective_think_end_tag: str = Field(default_factory=lambda: os.getenv('THINK_END_TAG', '</think>'))
+    target_model_for_log: str = 'default' # For logging if no model in request
+    model_specific_config: Cfg = Field(default_factory=Cfg)  # Initialize to ensure it's always a dict
+    enable_think_tag_filtering: bool = False  # Default to filtering disabled
+
+
+def _handle_json_body(json_body, *, ctx: Ctx):
+    ctx.target_model_for_log = json_body.get('model', 'default') # Update for logging
+    # Apply model-specific LLM parameter overrides from environment
+    if llm_params := os.getenv('LLM_PARAMS'):
+        # Parse model configurations: "model=MODEL1,param1=val1,param2=val2;model=MODEL2,param3=val3"
+        model_configs = {}
+        for model_entry in llm_params.split(';'):
+            model_entry = model_entry.strip()
+            if not model_entry or not model_entry.startswith('model='):
+                continue
+
+            # Split into model declaration and parameters
+            parts = model_entry.split(',')
+            model_name = parts[0].split('=', 1)[1].strip()
+            model_configs[model_name] = Cfg()
+
+            # Process parameters after model declaration
+            for param in parts[1:]:
+                param = param.strip()
+                if '=' in param:
+                    key, value = param.split('=', 1)
+                    key = key.strip()
+                    value = value.strip()
+                    if key == 'enable_think_tag_filtering':
+                        setattr(model_configs[model_name], key, value.lower() == 'true')
+                    elif key in Cfg.model_fields:
+                        setattr(model_configs[model_name], key, value)  # Store as raw string
+                    else:
+                        model_configs[model_name].opts[key] = convert_param_value(key, value)
+
+        # Get target model from request (already got for ctx.target_model_for_log)
+        current_target_model = json_body.get('model')
+
+        if current_target_model and current_target_model in model_configs:
+            ctx.model_specific_config = model_configs[current_target_model]
+            ctx.effective_think_start_tag = ctx.model_specific_config.think_tag_start
+            ctx.effective_think_end_tag = ctx.model_specific_config.think_tag_end
+            ctx.enable_think_tag_filtering = ctx.model_specific_config.enable_think_tag_filtering
+            original_model = current_target_model
+            logger.debug(f"Applying LLM parameters for model: {original_model}")
+            logger.debug(f"Applying LLM parameters for model: {current_target_model}")
+            if ctx.model_specific_config.upstream_model_name != 'default':
+                json_body['model'] = ctx.model_specific_config.upstream_model_name
+                logger.info(f"Replacing pseudo model '{original_model}' with upstream model '{json_body['model']}'")
+            for k, v in ctx.model_specific_config.opts.items():
+                json_body[k] = v
+                logger.debug(f"Overriding LLM parameter: {k} = {v}")
+
+        elif current_target_model: # Model in request, but no specific config in LLM_PARAMS
+            logger.debug(f"No specific LLM_PARAMS configuration found for model: {current_target_model}. Using default think tags.")
+        # If no current_target_model in json_body, effective tags remain global defaults.
+        # If LLM_PARAMS has a "default" config, it might apply if current_target_model is None
+        # and the logic for 'target_model or default' is used for param overrides (currently not for overrides, only for log).
+        # The current logic: if json_body.get('model') is None, no specific ctx.model_specific_config is found.
+        # If a "default" model config exists in LLM_PARAMS and no model is in request,
+        # it should ideally pick up "default" config for overrides too.
+        # Let's adjust to check for "default" config if no model in request.
+        elif "default" in model_configs and not current_target_model:
+            ctx.model_specific_config = model_configs["default"]
+            ctx.effective_think_start_tag = ctx.model_specific_config.think_tag_start
+            ctx.effective_think_end_tag = ctx.model_specific_config.think_tag_end
+            ctx.enable_think_tag_filtering = ctx.model_specific_config.enable_think_tag_filtering
+            original_model = 'default (no model in request)'
+            logger.debug(f"Applying LLM parameters for 'default' model configuration (no model in request).")
+
+            if ctx.model_specific_config.upstream_model_name != 'default':
+                json_body['model'] = ctx.model_specific_config.upstream_model_name
+                logger.info(f"Using upstream model '{json_body['model']}' for default configuration")
+            for key, value in ctx.model_specific_config.opts.items():
+                json_body[key] = value
+                logger.debug(f"Overriding LLM parameter for 'default': {key} = {value}")
+
+
 @app.route('/', defaults={'path': ''}, methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 @app.route('/<path:path>', methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 def proxy(path):
@@ -183,14 +269,7 @@ def proxy(path):
     logger.debug(f"Forwarding {request.method} request to: {target_url}")
     logger.debug(f"Headers: {headers}")
 
-    # Initialize effective_think_start_tag and effective_think_end_tag to global defaults
-    # These will be used by the streaming/non-streaming response handlers.
-    # They might be updated if json_body and LLM_PARAMS are processed.
-    effective_think_start_tag = DEFAULT_THINK_START_TAG
-    effective_think_end_tag = DEFAULT_THINK_END_TAG
-    target_model_for_log = 'default' # For logging if no model in request
-    model_specific_config = {}  # Initialize to ensure it's always a dict
-    enable_think_tag_filtering = False  # Default to filtering disabled
+    ctx = Ctx()
 
     try:
         # Get JSON body if present
@@ -198,92 +277,12 @@ def proxy(path):
         logger.debug(f"Request JSON body: {json_body}")
 
         if json_body:
-            target_model_for_log = json_body.get('model', 'default') # Update for logging
-            # Apply model-specific LLM parameter overrides from environment
-            if llm_params := os.getenv('LLM_PARAMS'):
-                # Parse model configurations: "model=MODEL1,param1=val1,param2=val2;model=MODEL2,param3=val3"
-                model_configs = {}
-                for model_entry in llm_params.split(';'):
-                    model_entry = model_entry.strip()
-                    if not model_entry or not model_entry.startswith('model='):
-                        continue
+            _handle_json_body(json_body, ctx=ctx)
 
-                    # Split into model declaration and parameters
-                    parts = model_entry.split(',')
-                    model_name = parts[0].split('=', 1)[1].strip()
-                    model_configs[model_name] = {}
+        logger.info(f"Using think tags for model '{ctx.target_model_for_log}': START='{ctx.effective_think_start_tag}', END='{ctx.effective_think_end_tag}'")
+        logger.info(f"Think tag filtering enabled: {ctx.enable_think_tag_filtering} for model '{ctx.target_model_for_log}'")
 
-                    # Process parameters after model declaration
-                    for param in parts[1:]:
-                        param = param.strip()
-                        if '=' in param:
-                            key, value = param.split('=', 1)
-                            key = key.strip()
-                            value = value.strip()
-                            if key in ['think_tag_start', 'think_tag_end', 'upstream_model_name', 'append_to_last_user_message']:
-                                model_configs[model_name][key] = value  # Store as raw string
-                            elif key == 'enable_think_tag_filtering':
-                                model_configs[model_name][key] = value.lower() == 'true'
-                            else:
-                                model_configs[model_name][key] = convert_param_value(key, value)
-
-                # Get target model from request (already got for target_model_for_log)
-                current_target_model = json_body.get('model')
-
-                if current_target_model and current_target_model in model_configs:
-                    model_specific_config = model_configs[current_target_model]
-                    effective_think_start_tag = model_specific_config.get('think_tag_start', DEFAULT_THINK_START_TAG)
-                    effective_think_end_tag = model_specific_config.get('think_tag_end', DEFAULT_THINK_END_TAG)
-                    enable_think_tag_filtering = model_specific_config.get('enable_think_tag_filtering', False) # Default to False if key missing
-                    original_model = current_target_model
-                    logger.debug(f"Applying LLM parameters for model: {original_model}")
-
-                    # Replace the model in the request body if upstream_model_name is specified
-                    if 'upstream_model_name' in model_specific_config:
-                        upstream_model = model_specific_config['upstream_model_name']
-                        json_body['model'] = upstream_model
-                        target_model_for_log = upstream_model
-                        logger.info(f"Replacing pseudo model '{original_model}' with upstream model '{upstream_model}'")
-
-                    # Apply other parameters (excluding think tags and upstream_model_name)
-                    logger.debug(f"Applying LLM parameters for model: {current_target_model}")
-                    for key, value in model_specific_config.items():
-                        if key not in ['enable_think_tag_filtering', 'think_tag_start', 'think_tag_end', 'upstream_model_name', 'append_to_last_user_message']:
-                            json_body[key] = value
-                            logger.debug(f"Overriding LLM parameter: {key} = {value}")
-
-                elif current_target_model: # Model in request, but no specific config in LLM_PARAMS
-                    logger.debug(f"No specific LLM_PARAMS configuration found for model: {current_target_model}. Using default think tags.")
-                # If no current_target_model in json_body, effective tags remain global defaults.
-                # If LLM_PARAMS has a "default" config, it might apply if current_target_model is None
-                # and the logic for 'target_model or default' is used for param overrides (currently not for overrides, only for log).
-                # The current logic: if json_body.get('model') is None, no specific model_specific_config is found.
-                # If a "default" model config exists in LLM_PARAMS and no model is in request,
-                # it should ideally pick up "default" config for overrides too.
-                # Let's adjust to check for "default" config if no model in request.
-                elif "default" in model_configs and not current_target_model:
-                    model_specific_config = model_configs["default"]
-                    effective_think_start_tag = model_specific_config.get('think_tag_start', DEFAULT_THINK_START_TAG)
-                    effective_think_end_tag = model_specific_config.get('think_tag_end', DEFAULT_THINK_END_TAG)
-                    enable_think_tag_filtering = model_specific_config.get('enable_think_tag_filtering', False) # Default to False if key missing
-                    original_model = 'default (no model in request)'
-                    logger.debug(f"Applying LLM parameters for 'default' model configuration (no model in request).")
-
-                    if 'upstream_model_name' in model_specific_config:
-                        upstream_model = model_specific_config['upstream_model_name']
-                        json_body['model'] = upstream_model
-                        target_model_for_log = upstream_model
-                        logger.info(f"Using upstream model '{upstream_model}' for default configuration")
-
-                    for key, value in model_specific_config.items():
-                        if key not in ['enable_think_tag_filtering', 'think_tag_start', 'think_tag_end', 'upstream_model_name', 'append_to_last_user_message']:
-                            json_body[key] = value
-                            logger.debug(f"Overriding LLM parameter for 'default': {key} = {value}")
-
-        logger.info(f"Using think tags for model '{target_model_for_log}': START='{effective_think_start_tag}', END='{effective_think_end_tag}'")
-        logger.info(f"Think tag filtering enabled: {enable_think_tag_filtering} for model '{target_model_for_log}'")
-
-        append_string = model_specific_config.get('append_to_last_user_message')
+        append_string = ctx.model_specific_config.append_to_last_user_message
         if append_string and json_body: # Ensure json_body exists
             if 'messages' not in json_body or not json_body['messages']:
                 # No messages: create a new user message with the string
@@ -437,9 +436,9 @@ def proxy(path):
                 logger.error(f"Error processing model list: {e}")
 
         # Conditional filtering based on enable_think_tag_filtering
-        if enable_think_tag_filtering:
+        if ctx.enable_think_tag_filtering:
             # Use effective_think_start_tag and effective_think_end_tag defined earlier in the proxy function
-            think_pattern = f"{re.escape(effective_think_start_tag)}.*?{re.escape(effective_think_end_tag)}"
+            think_pattern = f"{re.escape(ctx.effective_think_start_tag)}.*?{re.escape(ctx.effective_think_end_tag)}"
             filtered = re.sub(think_pattern, '', decoded, flags=re.DOTALL)
         else:
             filtered = decoded  # Skip filtering
@@ -454,11 +453,11 @@ def proxy(path):
     else:
         # Stream the filtered response back to the client
         def generate_filtered_response():
-            buffer = StreamBuffer(effective_think_start_tag, effective_think_end_tag)
+            buffer = StreamBuffer(ctx.effective_think_start_tag, ctx.effective_think_end_tag)
             client_disconnected = False
             try:
                 # Conditional filtering based on enable_think_tag_filtering
-                if enable_think_tag_filtering:
+                if ctx.enable_think_tag_filtering:
                     for chunk in g.api_response.iter_content(chunk_size=8192):
                         # The act of trying to yield to a disconnected client will typically
                         # raise GeneratorExit or a socket error, caught below.

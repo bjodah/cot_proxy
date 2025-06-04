@@ -5,7 +5,13 @@ description = "Intercepting LLM-proxy based on annotated model names."
 authors = ["Benjamin Oldenburg <email@example.com>"]
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["Flask", "requests", "gunicorn", "responses"]
+dependencies = [
+    "Flask",
+ "requests",
+ "gunicorn",
+ "responses",
+ "pydantic>=2.11.5",
+]
 
 [dependency-groups]
 dev = [
