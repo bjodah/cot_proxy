@@ -1,4 +1,5 @@
-from pydantic import BaseModel, Field, validator
+import copy
+from pydantic import BaseModel, Field, field_validator
 import yaml
 from typing import Pattern, Dict, Any, Tuple, Optional
 import re
@@ -15,24 +16,26 @@ import re # Ensure re is available for escaping
 
 # Configuration data structures
 class ThinkingConfig(BaseModel):
-    strip: bool = True
+    do_strip: bool = False
     tags: Tuple[str, str] = ('<think>', '</think>')
 
 class VariantConfig(BaseModel):
-    tag: str
+    name: str
+    label: str
     model_regex: str
     inject_at_end: str = ""
-    weak_defaults: Dict[str, Any] = {}
-    thinking: ThinkingConfig = ThinkingConfig()
-    
-    @validator('model_regex', pre=True)
-    def compile_regex(cls, v):
-        return re.compile(v)
+    weak_defaults: Dict[str, Any] = Field(default_factory=dict)
+    thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
+
+    # @field_validator('model_regex', mode='before')
+    # @classmethod
+    # def compile_regex(cls, v):
+    #     return re.compile(v)
 
 class AppConfig(BaseModel):
     log_level: str = "info"
     api_request_timeout: int = 1250
-    model_name_split_token: str = "@"
+    split_token_model_name_label: str = "@"
     variants: Dict[str, VariantConfig] = {}
 
 # Parameter type definitions
@@ -145,7 +148,7 @@ def load_config() -> AppConfig:
     """Load and merge configuration from YAML file and environment variables."""
     config_path = os.getenv('COT_CONFIG')
     config_data = {}
-    
+
     # Load from YAML if specified
     if config_path:
         try:
@@ -155,25 +158,28 @@ def load_config() -> AppConfig:
         except Exception as e:
             logger.error(f"Failed to load config from {config_path}: {str(e)}")
             raise
-
-    # Apply environment variable overrides
-    env_overrides = {
-        'log_level': os.getenv('DEBUG', '').lower() == 'true' and 'debug' or 'info',
-        'api_request_timeout': os.getenv('API_REQUEST_TIMEOUT'),
-        'model_name_split_token': os.getenv('MODEL_NAME_SPLIT_TOKEN')
-    }
-    config_data.update({k: v for k, v in env_overrides.items() if v is not None})
+    else:
+        logger.warning("No config read, set env var COT_CONFIG to point to a yaml file.")
 
     # Process variant inheritance
     if 'variants' in config_data:
         variants = config_data['variants']
-        for name, variant in variants.items():
-            if 'base-off' in variant:
-                base_name = variant.pop('base-off')
-                if base_name in variants:
-                    base_variant = variants[base_name]
-                    variant = {**base_variant.dict(), **variant}
-                    variants[name] = variant
+        new_variants = {}
+        for var_nam, cur_var in variants.items():
+            if 'base_off' in cur_var:
+                base = copy.deepcopy(variants[cur_var.pop('base_off')])
+                for k, v in cur_var.items():
+                    if isinstance(v, dict):
+                        base[k].update(v)
+                    else:
+                        base[k] = v
+                new_variants[var_nam] = base
+            else:
+                new_variants[var_nam] = cur_var
+            new_variants[var_nam]['name'] = var_nam
+        config_data['variants'] = new_variants
+    else:
+        logger.warning("No variants found in config")
 
     return AppConfig(**config_data)
 
@@ -196,7 +202,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configure target URL
-TARGET_BASE_URL = os.getenv('COT_TARGET_BASE_URL', 'https://api.openai.com/v1/')
+TARGET_BASE_URL = os.getenv('COT_TARGET_BASE_URL', 'https://api.openai.com/')
 if not TARGET_BASE_URL.endswith('/'):
     TARGET_BASE_URL += '/'  # Ensure trailing slash for urljoin
 
@@ -229,131 +235,42 @@ def health_check():
             content_type="application/json"
         )
 
-class Cfg(BaseModel):
-    think_tag_start: str = Field(default_factory=lambda: os.getenv('THINK_TAG', '<think>'))
-    think_tag_end: str = Field(default_factory=lambda: os.getenv('THINK_END_TAG', '</think>'))
+class PseudoModel(BaseModel):
     upstream_model_name: str = "default"
-    append_to_last_user_message: str = ""
-    enable_think_tag_filtering: bool = False
-    opts: dict = Field(default_factory=dict)
+    variant: VariantConfig
 
 
-def resolve_variant(model_name: str) -> Optional[VariantConfig]:
+def resolve_variant(model_name: str) -> Optional[PseudoModel]:
     """Resolve the appropriate variant config for a given model name."""
     if not model_name:
         return None
-        
+
     # Check for explicit tag match (model@tag)
-    if config.model_name_split_token in model_name:
-        base_model, tag = model_name.split(config.model_name_split_token, 1)
+    if config.split_token_model_name_label in model_name:
+        base_model, tag = model_name.split(config.split_token_model_name_label, 1)
         for variant in config.variants.values():
-            if variant.tag == tag:
-                return variant
-    
-    # Check regex matches
-    for variant in config.variants.values():
-        if variant.model_regex.search(model_name):
-            return variant
-            
+            if variant.tag != tag:
+                continue
+            if re.compile(variant.model_regex).search(base_model):
+                return PseudoModel(base_model, variant)
     return None
 
-class Ctx(BaseModel):
-    effective_think_start_tag: str = Field(default_factory=lambda: os.getenv('THINK_TAG', '<think>'))
-    effective_think_end_tag: str = Field(default_factory=lambda: os.getenv('THINK_END_TAG', '</think>'))
-    target_model_for_log: str = 'default' # For logging if no model in request
-    model_specific_config: Cfg = Field(default_factory=Cfg)  # Initialize to ensure it's always a dict
-    enable_think_tag_filtering: bool = False  # Default to filtering disabled
 
-
-def _handle_json_body(json_body, *, ctx: Ctx):
+def _handle_json_body_inplace(json_body) -> Optional[PseudoModel]:
     model_name = json_body.get('model')
-    variant = resolve_variant(model_name)
-    
-    if variant:
-        ctx.model_specific_config = variant
-        ctx.effective_think_start_tag = variant.thinking.tags[0]
-        ctx.effective_think_end_tag = variant.thinking.tags[1]
-        ctx.enable_think_tag_filtering = variant.thinking.strip
-        
-        # Apply weak defaults
-        for param, value in variant.weak_defaults.items():
-            if param not in json_body:
-                json_body[param] = value
-                logger.debug(f"Applied weak default {param}={value}")
-                
-        # Append inject_at_end if specified
-        if variant.inject_at_end:
-            append_string = variant.inject_at_end
-    ctx.target_model_for_log = json_body.get('model', 'default') # Update for logging
-    # Apply model-specific LLM parameter overrides from environment
-    if llm_params := os.getenv('LLM_PARAMS'):
-        # Parse model configurations: "model=MODEL1,param1=val1,param2=val2;model=MODEL2,param3=val3"
-        model_configs = {}
-        for model_entry in llm_params.split(';'):
-            model_entry = model_entry.strip()
-            if not model_entry or not model_entry.startswith('model='):
-                continue
+    if (cfg := resolve_variant(model_name)) is None:
+        return None
 
-            # Split into model declaration and parameters
-            parts = model_entry.split(',')
-            model_name = parts[0].split('=', 1)[1].strip()
-            model_configs[model_name] = Cfg()
+    base, variant = base_variant
+    # Apply weak defaults
+    for param, value in variant.weak_defaults.items():
+        if param not in json_body:
+            json_body[param] = value
+            logger.debug(f"Applied weak default {param}={value}")
 
-            # Process parameters after model declaration
-            for param in parts[1:]:
-                param = param.strip()
-                if '=' in param:
-                    key, value = param.split('=', 1)
-                    key = key.strip()
-                    value = value.strip()
-                    if key == 'enable_think_tag_filtering':
-                        setattr(model_configs[model_name], key, value.lower() == 'true')
-                    elif key in Cfg.model_fields:
-                        setattr(model_configs[model_name], key, value)  # Store as raw string
-                    else:
-                        model_configs[model_name].opts[key] = convert_param_value(key, value)
-
-        # Get target model from request (already got for ctx.target_model_for_log)
-        current_target_model = json_body.get('model')
-
-        if current_target_model and current_target_model in model_configs:
-            ctx.model_specific_config = model_configs[current_target_model]
-            ctx.effective_think_start_tag = ctx.model_specific_config.think_tag_start
-            ctx.effective_think_end_tag = ctx.model_specific_config.think_tag_end
-            ctx.enable_think_tag_filtering = ctx.model_specific_config.enable_think_tag_filtering
-            original_model = current_target_model
-            logger.debug(f"Applying LLM parameters for model: {original_model}")
-            logger.debug(f"Applying LLM parameters for model: {current_target_model}")
-            if ctx.model_specific_config.upstream_model_name != 'default':
-                json_body['model'] = ctx.model_specific_config.upstream_model_name
-                logger.info(f"Replacing pseudo model '{original_model}' with upstream model '{json_body['model']}'")
-            for k, v in ctx.model_specific_config.opts.items():
-                json_body[k] = v
-                logger.debug(f"Overriding LLM parameter: {k} = {v}")
-
-        elif current_target_model: # Model in request, but no specific config in LLM_PARAMS
-            logger.debug(f"No specific LLM_PARAMS configuration found for model: {current_target_model}. Using default think tags.")
-        # If no current_target_model in json_body, effective tags remain global defaults.
-        # If LLM_PARAMS has a "default" config, it might apply if current_target_model is None
-        # and the logic for 'target_model or default' is used for param overrides (currently not for overrides, only for log).
-        # The current logic: if json_body.get('model') is None, no specific ctx.model_specific_config is found.
-        # If a "default" model config exists in LLM_PARAMS and no model is in request,
-        # it should ideally pick up "default" config for overrides too.
-        # Let's adjust to check for "default" config if no model in request.
-        elif "default" in model_configs and not current_target_model:
-            ctx.model_specific_config = model_configs["default"]
-            ctx.effective_think_start_tag = ctx.model_specific_config.think_tag_start
-            ctx.effective_think_end_tag = ctx.model_specific_config.think_tag_end
-            ctx.enable_think_tag_filtering = ctx.model_specific_config.enable_think_tag_filtering
-            original_model = 'default (no model in request)'
-            logger.debug(f"Applying LLM parameters for 'default' model configuration (no model in request).")
-
-            if ctx.model_specific_config.upstream_model_name != 'default':
-                json_body['model'] = ctx.model_specific_config.upstream_model_name
-                logger.info(f"Using upstream model '{json_body['model']}' for default configuration")
-            for key, value in ctx.model_specific_config.opts.items():
-                json_body[key] = value
-                logger.debug(f"Overriding LLM parameter for 'default': {key} = {value}")
+    json_body['model'] = cfg.upstream_model_name
+    logger.info(f"Replaced pseudo model '{model_name}' with upstream model '{cfg.upstream_model_name}'")
+    return cfg
 
 
 def _handle_messages(messages, append_string):
@@ -391,57 +308,54 @@ def _handle_messages(messages, append_string):
         messages.append({"role": "user", "content": append_string})
         logger.debug(f"Last message not 'user'. Inserted new user message with content: {append_string}")
 
-def _handle_non_streaming(path, *, ctx: Ctx):
-    content = g.api_response.content
-    decoded = content.decode("utf-8", errors="replace")
+def _handle_models_listing(decoded):
+    try:
+        # Attempt to parse the JSON response
+        models_data = json.loads(decoded)
 
-    # Check if this is a model list request
-    if path in ['models', 'v1/models']:
-        try:
-            # Attempt to parse the JSON response
-            models_data = json.loads(decoded)
+        # Extract pseudo models from LLM_PARAMS
+        pseudo_models = []
+        llm_params = os.getenv('LLM_PARAMS', '')
+        if llm_params:
+            for model_entry in llm_params.split(';'):
+                model_entry = model_entry.strip()
+                if not model_entry or not model_entry.startswith('model='):
+                    continue
+                parts = model_entry.split(',')
+                model_name = parts[0].split('=', 1)[1].strip()
 
-            # Extract pseudo models from LLM_PARAMS
-            pseudo_models = []
-            llm_params = os.getenv('LLM_PARAMS', '')
-            if llm_params:
-                for model_entry in llm_params.split(';'):
-                    model_entry = model_entry.strip()
-                    if not model_entry or not model_entry.startswith('model='):
-                        continue
-                    parts = model_entry.split(',')
-                    model_name = parts[0].split('=', 1)[1].strip()
+                # Create a pseudo model entry in OpenAI-like format
+                pseudo_model = {
+                    'id': model_name,
+                    'object': 'model',
+                    'created': int(time.time()),
+                    'owned_by': 'organization-owner'
+                }
+                pseudo_models.append(pseudo_model)
 
-                    # Create a pseudo model entry in OpenAI-like format
-                    pseudo_model = {
-                        'id': model_name,
-                        'object': 'model',
-                        'created': int(time.time()),
-                        'owned_by': 'organization-owner'
-                    }
-                    pseudo_models.append(pseudo_model)
+            # Merge pseudo models into the 'data' array if it exists
+            if 'data' in models_data:
+                models_data['data'].extend(pseudo_models)
+            else:
+                models_data['data'] = pseudo_models
 
-                # Merge pseudo models into the 'data' array if it exists
-                if 'data' in models_data:
-                    models_data['data'].extend(pseudo_models)
-                else:
-                    models_data['data'] = pseudo_models
+        # Re-encode the JSON response
+        decoded = json.dumps(models_data)
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse model list response: {e}")
+    except Exception as e:
+        logger.error(f"Error processing model list: {e}")
+    return decoded
 
-            # Re-encode the JSON response
-            decoded = json.dumps(models_data)
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse model list response: {e}")
-        except Exception as e:
-            logger.error(f"Error processing model list: {e}")
+def _filtering_for_pseudo_model(decoded, pseudo: PseudoModel):
+    assert(pseudo.variant.thinking.do_strip)
+    # Use effective_think_start_tag and effective_think_end_tag defined earlier in the proxy function
+    start, end = pseudo.variant.thinking.tags
+    think_pattern = f"{re.escape(start)}.*?{re.escape(end)}"
+    return re.sub(think_pattern, '', decoded, flags=re.DOTALL)
 
-    # Conditional filtering based on enable_think_tag_filtering
-    if ctx.enable_think_tag_filtering:
-        # Use effective_think_start_tag and effective_think_end_tag defined earlier in the proxy function
-        think_pattern = f"{re.escape(ctx.effective_think_start_tag)}.*?{re.escape(ctx.effective_think_end_tag)}"
-        filtered = re.sub(think_pattern, '', decoded, flags=re.DOTALL)
-    else:
-        filtered = decoded  # Skip filtering
 
+def _handle_non_streaming(filtered):
     logger.debug(f"Non-streaming response content: {filtered}")
     return Response(
         filtered.encode("utf-8"),
@@ -450,13 +364,13 @@ def _handle_non_streaming(path, *, ctx: Ctx):
         content_type=g.api_response.headers.get("Content-Type", "application/json")
     )
 
-def _handle_streaming(*, ctx: Ctx):
+def _handle_streaming(*, pseudo: PseudoModel):
     def generate_filtered_response():
-        buffer = StreamBuffer(ctx.effective_think_start_tag, ctx.effective_think_end_tag)
         client_disconnected = False
         try:
             # Conditional filtering based on enable_think_tag_filtering
-            if ctx.enable_think_tag_filtering:
+            if pseudo is not None and pseudo.variant.thinking.do_strip:
+                buffer = StreamBuffer(*pseudo.variant.thinking.tags)
                 for chunk in g.api_response.iter_content(chunk_size=8192):
                     # The act of trying to yield to a disconnected client will typically
                     # raise GeneratorExit or a socket error, caught below.
@@ -534,21 +448,19 @@ def proxy(path):
     logger.debug(f"Forwarding {request.method} request to: {target_url}")
     logger.debug(f"Headers: {headers}")
 
-    ctx = Ctx()
-
+    pseudo = None
     try:
         # Get JSON body if present
         json_body = request.get_json(silent=True) if request.is_json else None
         logger.debug(f"Request JSON body: {json_body}")
 
         if json_body:
-            _handle_json_body(json_body, ctx=ctx)
+            pseudo = _handle_json_body_inplace(json_body)
 
-        logger.info(f"Using think tags for model '{ctx.target_model_for_log}': START='{ctx.effective_think_start_tag}', END='{ctx.effective_think_end_tag}'")
-        logger.info(f"Think tag filtering enabled: {ctx.enable_think_tag_filtering} for model '{ctx.target_model_for_log}'")
-
-        append_string = ctx.model_specific_config.append_to_last_user_message
-        if append_string and json_body: # Ensure json_body exists
+        if pseudo:
+            logger.info(f"Using think tags for model '{pseudo.variant.name}': START='{pseudo.variant.thinking.tags[0]}', END='{pseudo.variant.thinking.tags[1]}'")
+            logger.info(f"Think tag filtering enabled: {pseudo.variant.thinking.do_strip} for model '{pseudo.variant.name}'")
+            append_string = pseudo.variant.inject_at_end
             if 'messages' not in json_body or not json_body['messages']:
                 # No messages: create a new user message with the string
                 json_body.setdefault('messages', [])
@@ -571,7 +483,7 @@ def proxy(path):
                 headers=headers,
                 json=json_body,
                 stream=True,
-                timeout=int(os.getenv('API_REQUEST_TIMEOUT', 120)),  # Timeout in seconds, default 120
+                timeout=config.api_request_timeout,  # Timeout in seconds
                 verify=True  # Verify SSL certificates
             )
             logger.debug(f"Connected to target URL: {target_url}")
@@ -626,9 +538,17 @@ def proxy(path):
     logger.debug(f"Stream mode: {is_stream}")
 
     if is_stream:
-        return _handle_streaming(ctx=ctx)
+        return _handle_streaming(pseudo=pseudo)
     else:
-        return _handle_non_streaming(path, ctx=ctx)
+        content = g.api_response.content
+        decoded = content.decode("utf-8", errors="replace")
+        if path in ['models', 'v1/models']:
+            final = _handle_models_listing(decoded)
+        elif pseudo is not None and pseudo.variant.thinking.do_strip:
+            final = _filtering_for_pseudo_model(decoded, pseudo=pseudo)
+        else:
+            final = decoded
+        return _handle_non_streaming(final)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
