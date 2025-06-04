@@ -1,4 +1,7 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
+import yaml
+from typing import Pattern, Dict, Any, Tuple, Optional
+import re
 from flask import Flask, request, Response, stream_with_context, g
 import requests
 import re
@@ -9,6 +12,28 @@ import time
 from typing import Any
 from urllib.parse import urljoin
 import re # Ensure re is available for escaping
+
+# Configuration data structures
+class ThinkingConfig(BaseModel):
+    strip: bool = True
+    tags: Tuple[str, str] = ('<think>', '</think>')
+
+class VariantConfig(BaseModel):
+    tag: str
+    model_regex: str
+    inject_at_end: str = ""
+    weak_defaults: Dict[str, Any] = {}
+    thinking: ThinkingConfig = ThinkingConfig()
+    
+    @validator('model_regex', pre=True)
+    def compile_regex(cls, v):
+        return re.compile(v)
+
+class AppConfig(BaseModel):
+    log_level: str = "info"
+    api_request_timeout: int = 1250
+    model_name_split_token: str = "@"
+    variants: Dict[str, VariantConfig] = {}
 
 # Parameter type definitions
 PARAM_TYPES = {
@@ -116,7 +141,50 @@ def cleanup_request(exception=None):
         logger.debug("Cleaning up API response in teardown")
         g.api_response.close()
 
-# Configure logging based on DEBUG environment variable
+def load_config() -> AppConfig:
+    """Load and merge configuration from YAML file and environment variables."""
+    config_path = os.getenv('COT_CONFIG')
+    config_data = {}
+    
+    # Load from YAML if specified
+    if config_path:
+        try:
+            with open(config_path) as f:
+                config_data = yaml.safe_load(f) or {}
+            logger.info(f"Loaded configuration from {config_path}")
+        except Exception as e:
+            logger.error(f"Failed to load config from {config_path}: {str(e)}")
+            raise
+
+    # Apply environment variable overrides
+    env_overrides = {
+        'log_level': os.getenv('DEBUG', '').lower() == 'true' and 'debug' or 'info',
+        'api_request_timeout': os.getenv('API_REQUEST_TIMEOUT'),
+        'model_name_split_token': os.getenv('MODEL_NAME_SPLIT_TOKEN')
+    }
+    config_data.update({k: v for k, v in env_overrides.items() if v is not None})
+
+    # Process variant inheritance
+    if 'variants' in config_data:
+        variants = config_data['variants']
+        for name, variant in variants.items():
+            if 'base-off' in variant:
+                base_name = variant.pop('base-off')
+                if base_name in variants:
+                    base_variant = variants[base_name]
+                    variant = {**base_variant.dict(), **variant}
+                    variants[name] = variant
+
+    return AppConfig(**config_data)
+
+# Load configuration
+try:
+    config = load_config()
+except Exception as e:
+    logger.error(f"Configuration error: {str(e)}")
+    raise
+
+# Configure logging based on config
 log_level = logging.DEBUG if os.getenv('DEBUG', 'false').lower() == 'true' else logging.INFO
 logging.basicConfig(
     level=log_level,
@@ -167,6 +235,25 @@ class Cfg(BaseModel):
     opts: dict = Field(default_factory=dict)
 
 
+def resolve_variant(model_name: str) -> Optional[VariantConfig]:
+    """Resolve the appropriate variant config for a given model name."""
+    if not model_name:
+        return None
+        
+    # Check for explicit tag match (model@tag)
+    if config.model_name_split_token in model_name:
+        base_model, tag = model_name.split(config.model_name_split_token, 1)
+        for variant in config.variants.values():
+            if variant.tag == tag:
+                return variant
+    
+    # Check regex matches
+    for variant in config.variants.values():
+        if variant.model_regex.search(model_name):
+            return variant
+            
+    return None
+
 class Ctx(BaseModel):
     effective_think_start_tag: str = Field(default_factory=lambda: os.getenv('THINK_TAG', '<think>'))
     effective_think_end_tag: str = Field(default_factory=lambda: os.getenv('THINK_END_TAG', '</think>'))
@@ -176,6 +263,24 @@ class Ctx(BaseModel):
 
 
 def _handle_json_body(json_body, *, ctx: Ctx):
+    model_name = json_body.get('model')
+    variant = resolve_variant(model_name)
+    
+    if variant:
+        ctx.model_specific_config = variant
+        ctx.effective_think_start_tag = variant.thinking.tags[0]
+        ctx.effective_think_end_tag = variant.thinking.tags[1]
+        ctx.enable_think_tag_filtering = variant.thinking.strip
+        
+        # Apply weak defaults
+        for param, value in variant.weak_defaults.items():
+            if param not in json_body:
+                json_body[param] = value
+                logger.debug(f"Applied weak default {param}={value}")
+                
+        # Append inject_at_end if specified
+        if variant.inject_at_end:
+            append_string = variant.inject_at_end
     ctx.target_model_for_log = json_body.get('model', 'default') # Update for logging
     # Apply model-specific LLM parameter overrides from environment
     if llm_params := os.getenv('LLM_PARAMS'):
