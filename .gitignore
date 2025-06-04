@@ -27,4 +27,4 @@ dist/
 *.egg-info/
 
 # Logs
-*.log
+*.log.aider.chat.history.md

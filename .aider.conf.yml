@@ -1,7 +1,7 @@
 dark-mode: true
 architect: false
-#subtree-only: true
-gitignore: false
+subtree-only: true
+gitignore: true
 
 #model: openrouter/google/gemini-2.5-pro-preview  # 1M context, 66k output, 2.5s latency, 100 tok/s
 #model: openrouter/deepseek/deepseek-r1
