@@ -248,6 +248,163 @@ def _handle_json_body(json_body, *, ctx: Ctx):
                 logger.debug(f"Overriding LLM parameter for 'default': {key} = {value}")
 
 
+def _handle_messages(messages):
+    last_message = messages[-1]
+    if last_message.get('role') == 'user':
+        if isinstance(last_message.get('content'), str):
+            last_message['content'] += append_string
+            logger.debug(f"Appended to existing user message (string content): {append_string}")
+        elif isinstance(last_message.get('content'), list):
+            content_list = last_message['content']
+            appended_to_existing_text_part = False
+            # Iterate backwards to find the last text part to append to
+            # This handles cases like a list of text and image parts.
+            for i in range(len(content_list) - 1, -1, -1):
+                part = content_list[i]
+                if isinstance(part, dict) and part.get('type') == 'text' and 'text' in part:
+                    part['text'] += append_string
+                    appended_to_existing_text_part = True
+                    logger.debug(f"Appended to last text part of user message content list: {append_string}")
+                    break
+
+            if not appended_to_existing_text_part:
+                # If no suitable text part was found (e.g. list of images, or empty list),
+                # add a new text part.
+                content_list.append({'type': 'text', 'text': append_string})
+                logger.debug(f"Added new text part to user message content list: {append_string}")
+        else:
+            # Content is not a string or list (e.g., None or unexpected type)
+            # Set the content to the append_string.
+            original_content_type = type(last_message.get('content')).__name__
+            last_message['content'] = append_string
+            logger.warning(f"Last user message content was '{original_content_type}'. Overwritten with new string content: {append_string}")
+    else:
+        # Last message is not user: insert a new user message
+        messages.append({"role": "user", "content": append_string})
+        logger.debug(f"Last message not 'user'. Inserted new user message with content: {append_string}")
+
+def _handle_non_streaming(path, *, ctx: Ctx):
+    content = g.api_response.content
+    decoded = content.decode("utf-8", errors="replace")
+
+    # Check if this is a model list request
+    if path in ['models', 'v1/models']:
+        try:
+            # Attempt to parse the JSON response
+            models_data = json.loads(decoded)
+
+            # Extract pseudo models from LLM_PARAMS
+            pseudo_models = []
+            llm_params = os.getenv('LLM_PARAMS', '')
+            if llm_params:
+                for model_entry in llm_params.split(';'):
+                    model_entry = model_entry.strip()
+                    if not model_entry or not model_entry.startswith('model='):
+                        continue
+                    parts = model_entry.split(',')
+                    model_name = parts[0].split('=', 1)[1].strip()
+
+                    # Create a pseudo model entry in OpenAI-like format
+                    pseudo_model = {
+                        'id': model_name,
+                        'object': 'model',
+                        'created': int(time.time()),
+                        'owned_by': 'organization-owner'
+                    }
+                    pseudo_models.append(pseudo_model)
+
+                # Merge pseudo models into the 'data' array if it exists
+                if 'data' in models_data:
+                    models_data['data'].extend(pseudo_models)
+                else:
+                    models_data['data'] = pseudo_models
+
+            # Re-encode the JSON response
+            decoded = json.dumps(models_data)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse model list response: {e}")
+        except Exception as e:
+            logger.error(f"Error processing model list: {e}")
+
+    # Conditional filtering based on enable_think_tag_filtering
+    if ctx.enable_think_tag_filtering:
+        # Use effective_think_start_tag and effective_think_end_tag defined earlier in the proxy function
+        think_pattern = f"{re.escape(ctx.effective_think_start_tag)}.*?{re.escape(ctx.effective_think_end_tag)}"
+        filtered = re.sub(think_pattern, '', decoded, flags=re.DOTALL)
+    else:
+        filtered = decoded  # Skip filtering
+
+    logger.debug(f"Non-streaming response content: {filtered}")
+    return Response(
+        filtered.encode("utf-8"),
+        status=g.api_response.status_code,
+        headers=[(name, value) for name, value in g.api_response.headers.items() if name.lower() != "content-length"],
+        content_type=g.api_response.headers.get("Content-Type", "application/json")
+    )
+
+def _handle_streaming(*, ctx: Ctx):
+    def generate_filtered_response():
+        buffer = StreamBuffer(ctx.effective_think_start_tag, ctx.effective_think_end_tag)
+        client_disconnected = False
+        try:
+            # Conditional filtering based on enable_think_tag_filtering
+            if ctx.enable_think_tag_filtering:
+                for chunk in g.api_response.iter_content(chunk_size=8192):
+                    # The act of trying to yield to a disconnected client will typically
+                    # raise GeneratorExit or a socket error, caught below.
+
+                    output = buffer.process_chunk(chunk)
+                    if output:
+                        logger.debug(f"Streaming chunk: {output.decode('utf-8', errors='replace')}")
+                        yield output
+
+                # After the loop, if the client is still considered connected, flush the buffer
+                # (client_disconnected flag will be true if the except block was hit)
+                if not client_disconnected:
+                    final_output = buffer.flush()
+                    if final_output:
+                        logger.debug(f"Final streaming chunk after loop: {final_output.decode('utf-8', errors='replace')}")
+                        yield final_output
+            else:
+                # No filtering: stream chunks directly
+                for chunk in g.api_response.iter_content(chunk_size=8192):
+                    yield chunk
+
+
+        except (GeneratorExit, ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
+            # Only log if it's not a GeneratorExit (which is a normal stream closure)
+            if not isinstance(e, GeneratorExit):
+                logger.warning(f"Client disconnected or stream error during generation: {type(e).__name__} - {str(e)}")
+            client_disconnected = True
+            # Optionally, re-raise if specific handling is needed by Flask/Gunicorn,
+            # but often just returning is enough to stop the generator.
+            # For now, we'll just log and stop.
+        except requests.exceptions.RequestException as e:
+            # Catch other requests-related errors during streaming
+            logger.error(f"Requests exception during streaming: {type(e).__name__} - {str(e)}")
+            client_disconnected = True
+        except Exception as e:
+            # Catch any other unexpected errors during streaming
+            logger.error(f"Unexpected error during streaming: {type(e).__name__} - {str(e)}", exc_info=True)
+            client_disconnected = True
+        # finally:
+        #     # Ensure the downstream response is closed, especially if an error occurred.
+        #     # The teardown_request will also attempt this, but good for safety here too.
+        #     if hasattr(g, 'api_response') and g.api_response:
+        #         g.api_response.close()
+        #         logger.debug("Downstream API response closed in generate_filtered_response finally block.")
+
+    # Log response details
+    logger.debug(f"Response status: {g.api_response.status_code}")
+    logger.debug(f"Response headers: {dict(g.api_response.headers)}")
+
+    return Response(
+        stream_with_context(generate_filtered_response()),
+        status=g.api_response.status_code,
+        headers=[(name, value) for name, value in g.api_response.headers.items() if name.lower() != "content-length"],
+        content_type=g.api_response.headers.get("Content-Type", "application/json")
+    )
+
 @app.route('/', defaults={'path': ''}, methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 @app.route('/<path:path>', methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 def proxy(path):
@@ -292,39 +449,7 @@ def proxy(path):
             else:
                 # Find the last message to append to
                 if json_body['messages']: # Ensure messages list is not empty
-                    last_message = json_body['messages'][-1]
-                    if last_message.get('role') == 'user':
-                        if isinstance(last_message.get('content'), str):
-                            last_message['content'] += append_string
-                            logger.debug(f"Appended to existing user message (string content): {append_string}")
-                        elif isinstance(last_message.get('content'), list):
-                            content_list = last_message['content']
-                            appended_to_existing_text_part = False
-                            # Iterate backwards to find the last text part to append to
-                            # This handles cases like a list of text and image parts.
-                            for i in range(len(content_list) - 1, -1, -1):
-                                part = content_list[i]
-                                if isinstance(part, dict) and part.get('type') == 'text' and 'text' in part:
-                                    part['text'] += append_string
-                                    appended_to_existing_text_part = True
-                                    logger.debug(f"Appended to last text part of user message content list: {append_string}")
-                                    break
-
-                            if not appended_to_existing_text_part:
-                                # If no suitable text part was found (e.g. list of images, or empty list),
-                                # add a new text part.
-                                content_list.append({'type': 'text', 'text': append_string})
-                                logger.debug(f"Added new text part to user message content list: {append_string}")
-                        else:
-                            # Content is not a string or list (e.g., None or unexpected type)
-                            # Set the content to the append_string.
-                            original_content_type = type(last_message.get('content')).__name__
-                            last_message['content'] = append_string
-                            logger.warning(f"Last user message content was '{original_content_type}'. Overwritten with new string content: {append_string}")
-                    else:
-                        # Last message is not user: insert a new user message
-                        json_body['messages'].append({"role": "user", "content": append_string})
-                        logger.debug(f"Last message not 'user'. Inserted new user message with content: {append_string}")
+                    _handle_messages(json_body['messages'])
                 else: # messages list is empty
                     json_body['messages'].append({"role": "user", "content": append_string})
                     logger.debug(f"Messages list was empty. Created new user message with content: {append_string}")
@@ -392,127 +517,10 @@ def proxy(path):
     is_stream = json_body.get('stream', False) if json_body else False
     logger.debug(f"Stream mode: {is_stream}")
 
-    if not is_stream:
-        content = g.api_response.content
-        decoded = content.decode("utf-8", errors="replace")
-
-        # Check if this is a model list request
-        if path in ['models', 'v1/models']:
-            try:
-                # Attempt to parse the JSON response
-                models_data = json.loads(decoded)
-
-                # Extract pseudo models from LLM_PARAMS
-                pseudo_models = []
-                llm_params = os.getenv('LLM_PARAMS', '')
-                if llm_params:
-                    for model_entry in llm_params.split(';'):
-                        model_entry = model_entry.strip()
-                        if not model_entry or not model_entry.startswith('model='):
-                            continue
-                        parts = model_entry.split(',')
-                        model_name = parts[0].split('=', 1)[1].strip()
-
-                        # Create a pseudo model entry in OpenAI-like format
-                        pseudo_model = {
-                            'id': model_name,
-                            'object': 'model',
-                            'created': int(time.time()),
-                            'owned_by': 'organization-owner'
-                        }
-                        pseudo_models.append(pseudo_model)
-
-                    # Merge pseudo models into the 'data' array if it exists
-                    if 'data' in models_data:
-                        models_data['data'].extend(pseudo_models)
-                    else:
-                        models_data['data'] = pseudo_models
-
-                # Re-encode the JSON response
-                decoded = json.dumps(models_data)
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse model list response: {e}")
-            except Exception as e:
-                logger.error(f"Error processing model list: {e}")
-
-        # Conditional filtering based on enable_think_tag_filtering
-        if ctx.enable_think_tag_filtering:
-            # Use effective_think_start_tag and effective_think_end_tag defined earlier in the proxy function
-            think_pattern = f"{re.escape(ctx.effective_think_start_tag)}.*?{re.escape(ctx.effective_think_end_tag)}"
-            filtered = re.sub(think_pattern, '', decoded, flags=re.DOTALL)
-        else:
-            filtered = decoded  # Skip filtering
-
-        logger.debug(f"Non-streaming response content: {filtered}")
-        return Response(
-            filtered.encode("utf-8"),
-            status=g.api_response.status_code,
-            headers=[(name, value) for name, value in g.api_response.headers.items() if name.lower() != "content-length"],
-            content_type=g.api_response.headers.get("Content-Type", "application/json")
-        )
+    if is_stream:
+        return _handle_streaming(ctx=ctx)
     else:
-        # Stream the filtered response back to the client
-        def generate_filtered_response():
-            buffer = StreamBuffer(ctx.effective_think_start_tag, ctx.effective_think_end_tag)
-            client_disconnected = False
-            try:
-                # Conditional filtering based on enable_think_tag_filtering
-                if ctx.enable_think_tag_filtering:
-                    for chunk in g.api_response.iter_content(chunk_size=8192):
-                        # The act of trying to yield to a disconnected client will typically
-                        # raise GeneratorExit or a socket error, caught below.
-
-                        output = buffer.process_chunk(chunk)
-                        if output:
-                            logger.debug(f"Streaming chunk: {output.decode('utf-8', errors='replace')}")
-                            yield output
-
-                    # After the loop, if the client is still considered connected, flush the buffer
-                    # (client_disconnected flag will be true if the except block was hit)
-                    if not client_disconnected:
-                        final_output = buffer.flush()
-                        if final_output:
-                            logger.debug(f"Final streaming chunk after loop: {final_output.decode('utf-8', errors='replace')}")
-                            yield final_output
-                else:
-                    # No filtering: stream chunks directly
-                    for chunk in g.api_response.iter_content(chunk_size=8192):
-                        yield chunk
-
-
-            except (GeneratorExit, ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
-                # Only log if it's not a GeneratorExit (which is a normal stream closure)
-                if not isinstance(e, GeneratorExit):
-                    logger.warning(f"Client disconnected or stream error during generation: {type(e).__name__} - {str(e)}")
-                client_disconnected = True
-                # Optionally, re-raise if specific handling is needed by Flask/Gunicorn,
-                # but often just returning is enough to stop the generator.
-                # For now, we'll just log and stop.
-            except requests.exceptions.RequestException as e:
-                # Catch other requests-related errors during streaming
-                logger.error(f"Requests exception during streaming: {type(e).__name__} - {str(e)}")
-                client_disconnected = True
-            except Exception as e:
-                # Catch any other unexpected errors during streaming
-                logger.error(f"Unexpected error during streaming: {type(e).__name__} - {str(e)}", exc_info=True)
-                client_disconnected = True
-            # finally:
-            #     # Ensure the downstream response is closed, especially if an error occurred.
-            #     # The teardown_request will also attempt this, but good for safety here too.
-            #     if hasattr(g, 'api_response') and g.api_response:
-            #         g.api_response.close()
-            #         logger.debug("Downstream API response closed in generate_filtered_response finally block.")
-
-        # Log response details
-        logger.debug(f"Response status: {g.api_response.status_code}")
-        logger.debug(f"Response headers: {dict(g.api_response.headers)}")
-
-        return Response(
-            stream_with_context(generate_filtered_response()),
-            status=g.api_response.status_code,
-            headers=[(name, value) for name, value in g.api_response.headers.items() if name.lower() != "content-length"],
-            content_type=g.api_response.headers.get("Content-Type", "application/json")
-        )
+        return _handle_non_streaming(path, ctx=ctx)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
