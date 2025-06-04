@@ -177,6 +177,9 @@ def load_config() -> AppConfig:
 
     return AppConfig(**config_data)
 
+# Initialize logger first
+logger = logging.getLogger(__name__)
+
 # Load configuration
 try:
     config = load_config()
@@ -353,7 +356,7 @@ def _handle_json_body(json_body, *, ctx: Ctx):
                 logger.debug(f"Overriding LLM parameter for 'default': {key} = {value}")
 
 
-def _handle_messages(messages):
+def _handle_messages(messages, append_string):
     last_message = messages[-1]
     if last_message.get('role') == 'user':
         if isinstance(last_message.get('content'), str):
@@ -554,7 +557,7 @@ def proxy(path):
             else:
                 # Find the last message to append to
                 if json_body['messages']: # Ensure messages list is not empty
-                    _handle_messages(json_body['messages'])
+                    _handle_messages(json_body['messages'], append_string)
                 else: # messages list is empty
                     json_body['messages'].append({"role": "user", "content": append_string})
                     logger.debug(f"Messages list was empty. Created new user message with content: {append_string}")
