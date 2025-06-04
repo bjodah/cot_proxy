@@ -185,7 +185,7 @@ except Exception as e:
     raise
 
 # Configure logging based on config
-log_level = logging.DEBUG if os.getenv('DEBUG', 'false').lower() == 'true' else logging.INFO
+log_level = logging.DEBUG if config.log_level == 'debug' else logging.INFO
 logging.basicConfig(
     level=log_level,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -193,7 +193,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configure target URL
-TARGET_BASE_URL = os.getenv('TARGET_BASE_URL', 'https://api.openai.com/v1/')
+TARGET_BASE_URL = os.getenv('COT_TARGET_BASE_URL', 'https://api.openai.com/v1/')
 if not TARGET_BASE_URL.endswith('/'):
     TARGET_BASE_URL += '/'  # Ensure trailing slash for urljoin
 
