@@ -202,7 +202,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configure target URL
-TARGET_BASE_URL = os.getenv('COT_TARGET_BASE_URL', 'https://api.openai.com/')
+TARGET_BASE_URL = os.getenv('COT_TARGET_BASE_URL')
+if TARGET_BASE_URL is None:
+    raise ValueError("You need to set the environment variable: COT_TAGET_BASE_URL")
 if not TARGET_BASE_URL.endswith('/'):
     TARGET_BASE_URL += '/'  # Ensure trailing slash for urljoin
 
@@ -247,9 +249,9 @@ def resolve_variant(model_name: str) -> Optional[PseudoModel]:
 
     # Check for explicit tag match (model@tag)
     if config.split_token_model_name_label in model_name:
-        base_model, tag = model_name.split(config.split_token_model_name_label, 1)
+        base_model, label = model_name.split(config.split_token_model_name_label, 1)
         for variant in config.variants.values():
-            if variant.tag != tag:
+            if variant.label != label:
                 continue
             if re.compile(variant.model_regex).search(base_model):
                 return PseudoModel(base_model, variant)
@@ -357,10 +359,12 @@ def _filtering_for_pseudo_model(decoded, pseudo: PseudoModel):
 
 def _handle_non_streaming(filtered):
     logger.debug(f"Non-streaming response content: {filtered}")
+    encoded = filtered.encode("utf-8")
+    headers_to_exclude = {"content-length", "transfer-encoding"}
     return Response(
-        filtered.encode("utf-8"),
+        encoded,
         status=g.api_response.status_code,
-        headers=[(name, value) for name, value in g.api_response.headers.items() if name.lower() != "content-length"],
+        headers=[(name, value) for name, value in g.api_response.headers.items() if name.lower() not in headers_to_exclude],
         content_type=g.api_response.headers.get("Content-Type", "application/json")
     )
 

@@ -1,4 +1,4 @@
-log_level: info  # or "debug"
+log_level: debug  # "info" or "debug"
 api_request_timeout: 1250
 split_token_model_name_label: "@"
 
