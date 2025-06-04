@@ -1,3 +1,4 @@
+logLevel: info  # or "debug"
 apiRequestTimeout: 1250
 modelNameSplitToken: "@"
 

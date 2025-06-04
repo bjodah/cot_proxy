@@ -22,7 +22,7 @@ PARAM_TYPES = {
     'presence_penalty': float, # Penalty for token presence
     'frequency_penalty': float,# Penalty for token frequency
     'repetition_penalty': float, # Penalty for repetition
-    
+
     # Integer parameters
     'top_k': int,             # Top-k sampling parameter
     'max_tokens': int,        # Maximum tokens to generate
@@ -32,7 +32,7 @@ PARAM_TYPES = {
     'num_predict': int,       # Number of tokens to predict
     'repeat_last_n': int,     # Context for repetition penalty
     'batch_size': int,        # Batch size for generation
-    
+
     # Boolean parameters
     'echo': bool,             # Whether to echo prompt
     'stream': bool,           # Whether to stream responses
@@ -45,31 +45,31 @@ class StreamBuffer:
         self.buffer = ""
         self.start_tag = start_tag
         self.end_tag = end_tag
-        
+
     def process_chunk(self, chunk):
         # Decode and add to buffer
         decoded_chunk = chunk.decode("utf-8", errors="replace")
         self.buffer += decoded_chunk
-        
+
         output = ""
-        
+
         while True:
             # Find the next potential tag start
             start = self.buffer.find(self.start_tag)
-            
+
             if start == -1:
                 # No more think tags, output all except last few chars
                 if len(self.buffer) > 1024: # Keep some buffer for potential partial tags at the very end
                     output += self.buffer[:-1024]
                     self.buffer = self.buffer[-1024:]
                 break
-            
+
             # Output content before the tag
             if start > 0:
                 output += self.buffer[:start]
                 self.buffer = self.buffer[start:]
                 start = 0  # Tag is now at start of buffer
-            
+
             # Look for end tag
             end = self.buffer.find(self.end_tag, start) # Search after the start tag
             if end == -1:
@@ -80,13 +80,13 @@ class StreamBuffer:
                     # For now, break and wait for more data or flush.
                     pass # Keep in buffer
                 break
-            
+
             # Remove the complete think tag and its content
             end += len(self.end_tag)
             self.buffer = self.buffer[end:]
-        
+
         return output.encode("utf-8") if output else b""
-        
+
     def flush(self):
         # Output remaining content
         output = self.buffer
@@ -97,11 +97,11 @@ def convert_param_value(key: str, value: str) -> Any:
     """Convert parameter value to appropriate type based on parameter name."""
     if not value or value.lower() == 'null':
         return None
-        
+
     param_type = PARAM_TYPES.get(key)
     if not param_type:
         return value  # Keep as string if not a known numeric param
-        
+
     try:
         if param_type == bool:
             return value.lower() == 'true'
@@ -147,7 +147,7 @@ def health_check():
         )
         logger.debug(f"Health check - Target URL: {TARGET_BASE_URL}")
         logger.debug(f"Health check - Status code: {response.status_code}")
-        
+
         return Response(
             response='{"status": "healthy", "target_url": "' + TARGET_BASE_URL + '"}',
             status=200,
@@ -167,14 +167,14 @@ def health_check():
 def proxy(path):
     # Construct the target URL dynamically using the base URL and client's path
     target_url = urljoin(TARGET_BASE_URL, path)
-    
+
     # Forward all headers (except "Host" to avoid conflicts)
     headers = {
-        key: value 
-        for key, value in request.headers 
+        key: value
+        for key, value in request.headers
         if key.lower() != "host"
     }
-    
+
     # Forward query parameters from the original request
     if request.query_string:
         target_url += f"?{request.query_string.decode()}"
@@ -182,7 +182,7 @@ def proxy(path):
     # Log request details
     logger.debug(f"Forwarding {request.method} request to: {target_url}")
     logger.debug(f"Headers: {headers}")
-    
+
     # Initialize effective_think_start_tag and effective_think_end_tag to global defaults
     # These will be used by the streaming/non-streaming response handlers.
     # They might be updated if json_body and LLM_PARAMS are processed.
@@ -196,7 +196,7 @@ def proxy(path):
         # Get JSON body if present
         json_body = request.get_json(silent=True) if request.is_json else None
         logger.debug(f"Request JSON body: {json_body}")
-        
+
         if json_body:
             target_model_for_log = json_body.get('model', 'default') # Update for logging
             # Apply model-specific LLM parameter overrides from environment
@@ -207,12 +207,12 @@ def proxy(path):
                     model_entry = model_entry.strip()
                     if not model_entry or not model_entry.startswith('model='):
                         continue
-                    
+
                     # Split into model declaration and parameters
                     parts = model_entry.split(',')
                     model_name = parts[0].split('=', 1)[1].strip()
                     model_configs[model_name] = {}
-                    
+
                     # Process parameters after model declaration
                     for param in parts[1:]:
                         param = param.strip()
@@ -226,7 +226,7 @@ def proxy(path):
                                 model_configs[model_name][key] = value.lower() == 'true'
                             else:
                                 model_configs[model_name][key] = convert_param_value(key, value)
-                
+
                 # Get target model from request (already got for target_model_for_log)
                 current_target_model = json_body.get('model')
 
@@ -282,7 +282,7 @@ def proxy(path):
 
         logger.info(f"Using think tags for model '{target_model_for_log}': START='{effective_think_start_tag}', END='{effective_think_end_tag}'")
         logger.info(f"Think tag filtering enabled: {enable_think_tag_filtering} for model '{target_model_for_log}'")
-        
+
         append_string = model_specific_config.get('append_to_last_user_message')
         if append_string and json_body: # Ensure json_body exists
             if 'messages' not in json_body or not json_body['messages']:
@@ -310,7 +310,7 @@ def proxy(path):
                                     appended_to_existing_text_part = True
                                     logger.debug(f"Appended to last text part of user message content list: {append_string}")
                                     break
-                            
+
                             if not appended_to_existing_text_part:
                                 # If no suitable text part was found (e.g. list of images, or empty list),
                                 # add a new text part.
@@ -329,7 +329,7 @@ def proxy(path):
                 else: # messages list is empty
                     json_body['messages'].append({"role": "user", "content": append_string})
                     logger.debug(f"Messages list was empty. Created new user message with content: {append_string}")
-        
+
         # Try to connect with a timeout
         try:
             # Store response in Flask's request context
@@ -368,7 +368,7 @@ def proxy(path):
                 status=502,
                 content_type="application/json"
             )
-        
+
         # For error responses, return them directly without streaming
         if g.api_response.status_code >= 400:
             error_content = g.api_response.content.decode('utf-8')
@@ -379,7 +379,7 @@ def proxy(path):
                 status=g.api_response.status_code,
                 content_type=g.api_response.headers.get("Content-Type", "application/json")
             )
-                
+
     except requests.exceptions.RequestException as e:
         error_msg = f"Failed to forward request: {str(e)}"
         logger.error(error_msg)
@@ -392,11 +392,11 @@ def proxy(path):
     # Check if response should be streamed
     is_stream = json_body.get('stream', False) if json_body else False
     logger.debug(f"Stream mode: {is_stream}")
-    
+
     if not is_stream:
         content = g.api_response.content
         decoded = content.decode("utf-8", errors="replace")
-        
+
         # Check if this is a model list request
         if path in ['models', 'v1/models']:
             try:
@@ -462,12 +462,12 @@ def proxy(path):
                     for chunk in g.api_response.iter_content(chunk_size=8192):
                         # The act of trying to yield to a disconnected client will typically
                         # raise GeneratorExit or a socket error, caught below.
-                        
+
                         output = buffer.process_chunk(chunk)
                         if output:
                             logger.debug(f"Streaming chunk: {output.decode('utf-8', errors='replace')}")
                             yield output
-                    
+
                     # After the loop, if the client is still considered connected, flush the buffer
                     # (client_disconnected flag will be true if the except block was hit)
                     if not client_disconnected:
@@ -479,8 +479,8 @@ def proxy(path):
                     # No filtering: stream chunks directly
                     for chunk in g.api_response.iter_content(chunk_size=8192):
                         yield chunk
-                        
-                        
+
+
             except (GeneratorExit, ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
                 # Only log if it's not a GeneratorExit (which is a normal stream closure)
                 if not isinstance(e, GeneratorExit):
@@ -507,7 +507,7 @@ def proxy(path):
         # Log response details
         logger.debug(f"Response status: {g.api_response.status_code}")
         logger.debug(f"Response headers: {dict(g.api_response.headers)}")
-        
+
         return Response(
             stream_with_context(generate_filtered_response()),
             status=g.api_response.status_code,

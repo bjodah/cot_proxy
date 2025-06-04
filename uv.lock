@@ -112,13 +112,6 @@ dependencies = [
     { name = "responses" },
 ]
 
-[package.optional-dependencies]
-test = [
-    { name = "pytest" },
-    { name = "pytest-flask" },
-    { name = "pytest-mock" },
-]
-
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
@@ -130,9 +123,6 @@ dev = [
 requires-dist = [
     { name = "flask" },
     { name = "gunicorn" },
-    { name = "pytest", marker = "extra == 'test'" },
-    { name = "pytest-flask", marker = "extra == 'test'" },
-    { name = "pytest-mock", marker = "extra == 'test'" },
     { name = "requests" },
     { name = "responses" },
 ]

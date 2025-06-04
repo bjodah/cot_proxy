@@ -28,6 +28,17 @@ upgrade: false
 
 file:
   - cot_proxy.py
+  - tests/conftest.py
+  - tests/__init__.py
+  - tests/test_app.py
+  - tests/test_error_handling.py
+  - tests/test_helpers.py
+  - tests/test_llm_params.py
+  - tests/test_proxy_non_streaming.py
+  - tests/test_proxy_streaming.py
+  - tests/test_stream_buffer.py
+
 
 read:
   - INSTRUCTIONS.md 
+  - examples/cot_proxy.yaml
