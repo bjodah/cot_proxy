@@ -1,0 +1,33 @@
+dark-mode: true
+architect: false
+#subtree-only: true
+gitignore: false
+
+#model: openrouter/google/gemini-2.5-pro-preview  # 1M context, 66k output, 2.5s latency, 100 tok/s
+#model: openrouter/deepseek/deepseek-r1
+#model: deepseek/deepseek-reasoner
+model: openrouter/google/gemini-2.5-flash-preview-05-20  # 1M ctx, 66k out, 1.5s lat, 100 tok/s
+    
+#editor-model: openrouter/google/gemini-2.5-flash-preview-05-20  # 1M ctx, 66k out, 1.5s lat, 100 tok/s
+#editor-model: openrouter/deepseek/deepseek-chat-v3-0324
+#editor-model: deepseek/deepseek-chat
+
+
+#weak-model openrouter/google/gemini-2.0-flash-lite-001
+weak-model: gemini/gemini-2.0-flash-lite-001  # # 1M ctx, 8k out
+
+test-cmd: "uv run pytest -q"
+auto-test: true
+
+
+analytics: false
+analytics-disable: true
+check-update: false
+show-release-notes: false
+upgrade: false
+
+file:
+  - cot_proxy.py
+
+read:
+  - INSTRUCTIONS.md 
