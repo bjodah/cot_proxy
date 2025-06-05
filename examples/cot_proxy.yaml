@@ -15,6 +15,17 @@ variants:
       do_strip: true
       tags: ["<think>", "</think>"]
 
+  think-less-qwq32b:
+    label: "think-less"
+    model_regex: "QwQ-32B"
+    weak_logit_bias:
+      - [151668, 5]  # "</think>"
+    weak_defaults:
+      temperature: 0.5
+      top_k: 50
+      min_p: 0.01
+      top_p: 0.92
+
   do-think-qwen3:
     label: "think"
     model_regex: "[Qq]wen3-"

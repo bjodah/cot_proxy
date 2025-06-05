@@ -27,6 +27,7 @@ class VariantConfig(BaseModel):
     inject_at_end: str = ""
     weak_defaults: Dict[str, Any] = Field(default_factory=dict)
     thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
+    weak_logit_bias: list[tuple[int, int]] = Field(default_factory=list)
 
     @cached_property
     def model_re(self):
@@ -463,6 +464,20 @@ def proxy(path):
                 else: # messages list is empty
                     json_body['messages'].append({"role": "user", "content": append_string})
                     logger.debug(f"Messages list was empty. Created new user message with content: {append_string}")
+            if 'logit_bias' in json_body:
+                assert isinstance(json_body['logit_bias'], dict)
+            else:
+                if pseudo.variant.weak_logit_bias:
+                    json_body['logit_bias'] = {}
+
+            for t, b in pseudo.variant.weak_logit_bias:
+                if t in json_body['logit_bias']:
+                    continue
+                json_body['logit_bias'][t] = b
+
+            if pseudo.upstream_model_name.startswith('llamacpp-') and isinstance(json_body.get('logit_bias'), dict):
+                json_body['logit_bias'] = [[k, v] for k, v in json_body['logit_bias'].items()]  # I think...
+                print(f"{json_body['logit_bias']=}")
 
         # Try to connect with a timeout
         try:
