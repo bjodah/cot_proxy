@@ -1,4 +1,5 @@
 import copy
+from functools import cached_property
 from pydantic import BaseModel, Field, field_validator
 import yaml
 from typing import Pattern, Dict, Any, Tuple, Optional
@@ -26,6 +27,10 @@ class VariantConfig(BaseModel):
     inject_at_end: str = ""
     weak_defaults: Dict[str, Any] = Field(default_factory=dict)
     thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
+
+    @cached_property
+    def model_re(self):
+        return re.compile(self.model_regex)
 
     # @field_validator('model_regex', mode='before')
     # @classmethod
@@ -253,8 +258,9 @@ def resolve_variant(model_name: str) -> Optional[PseudoModel]:
         for variant in config.variants.values():
             if variant.label != label:
                 continue
-            if re.compile(variant.model_regex).search(base_model):
-                return PseudoModel(base_model, variant)
+            print(f"{variant.model_regex=}")
+            if variant.model_re.search(base_model):
+                return PseudoModel(upstream_model_name=base_model, variant=variant)
     return None
 
 
@@ -263,9 +269,8 @@ def _handle_json_body_inplace(json_body) -> Optional[PseudoModel]:
     if (cfg := resolve_variant(model_name)) is None:
         return None
 
-    base, variant = base_variant
     # Apply weak defaults
-    for param, value in variant.weak_defaults.items():
+    for param, value in cfg.variant.weak_defaults.items():
         if param not in json_body:
             json_body[param] = value
             logger.debug(f"Applied weak default {param}={value}")
@@ -312,41 +317,22 @@ def _handle_messages(messages, append_string):
 
 def _handle_models_listing(decoded):
     try:
-        # Attempt to parse the JSON response
         models_data = json.loads(decoded)
-
-        # Extract pseudo models from LLM_PARAMS
-        pseudo_models = []
-        llm_params = os.getenv('LLM_PARAMS', '')
-        if llm_params:
-            for model_entry in llm_params.split(';'):
-                model_entry = model_entry.strip()
-                if not model_entry or not model_entry.startswith('model='):
-                    continue
-                parts = model_entry.split(',')
-                model_name = parts[0].split('=', 1)[1].strip()
-
-                # Create a pseudo model entry in OpenAI-like format
-                pseudo_model = {
-                    'id': model_name,
-                    'object': 'model',
-                    'created': int(time.time()),
-                    'owned_by': 'organization-owner'
-                }
-                pseudo_models.append(pseudo_model)
-
-            # Merge pseudo models into the 'data' array if it exists
-            if 'data' in models_data:
-                models_data['data'].extend(pseudo_models)
-            else:
-                models_data['data'] = pseudo_models
-
-        # Re-encode the JSON response
-        decoded = json.dumps(models_data)
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse model list response: {e}")
-    except Exception as e:
-        logger.error(f"Error processing model list: {e}")
+    # except Exception as e:
+    #     logger.error(f"Error processing model list: {e}")
+    else:
+        extra = []
+        for entry in models_data.get('data', []):
+            for variant in config.variants.values():
+                if variant.model_re.search(entry['id']):
+                    pseudo = copy.deepcopy(entry)
+                    pseudo['id'] = pseudo['id'] + config.split_token_model_name_label + variant.label
+                    extra.append(pseudo)
+        # Merge pseudo models into the 'data' array if it exists
+        models_data['data'].extend(extra)
+        decoded = json.dumps(models_data)
     return decoded
 
 def _filtering_for_pseudo_model(decoded, pseudo: PseudoModel):
@@ -546,6 +532,7 @@ def proxy(path):
     else:
         content = g.api_response.content
         decoded = content.decode("utf-8", errors="replace")
+        print(f"{path=}")
         if path in ['models', 'v1/models']:
             final = _handle_models_listing(decoded)
         elif pseudo is not None and pseudo.variant.thinking.do_strip:
