@@ -27,7 +27,7 @@ class VariantConfig(BaseModel):
     inject_at_end: str = ""
     weak_defaults: Dict[str, Any] = Field(default_factory=dict)
     thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
-    weak_logit_bias: list[tuple[int, int]] = Field(default_factory=list)
+    weak_logit_bias: list[tuple[int, float]] = Field(default_factory=list)
 
     @cached_property
     def model_re(self):

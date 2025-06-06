@@ -3,39 +3,37 @@ api_request_timeout: 1250
 split_token_model_name_label: "@"
 
 variants:
-  no-think-qwen3:  # e.g. "model": Qwen/Qwen3-30B-A3B@no-think
-    label: "no-think"
-    model_regex: "[Qq]wen3-"
-    inject_at_end: "\n\n/no_think"
-    weak_defaults:
-      temperature: 0.7
-      top_k: 20
-      top_p: 0.8
-    thinking:
-      do_strip: true
-      tags: ["<think>", "</think>"]
-
-  think-less-qwq32b:
-    label: "think-less"
-    model_regex: "QwQ-32B"
-    weak_logit_bias:
-      - [151668, 5]  # "</think>"
-    weak_defaults:
-      temperature: 0.5
-      top_k: 50
-      min_p: 0.01
-      top_p: 0.92
-
   do-think-qwen3:
     label: "think"
     model_regex: "[Qq]wen3-"
     inject_at_end: "\n\n/think"
     weak_defaults:
-      temperature: 0.6
-      top_k: 20 
+      min_p: 0.01
       top_p: 0.95
+      top_k: 30 
+      temperature: 0.6
+      dry_multiplier: 0.5
+      dry_allowed_length: 5
     thinking:
       do_strip: false
+      tags: ["<think>", "</think>"]
+
+  no-think-qwen3:  # e.g. "model": Qwen/Qwen3-30B-A3B@no-think
+    label: "no-think"
+    model_regex: "[Qq]wen3-"
+    inject_at_end: "\n\n/no_think"
+    weak_defaults:
+      min_p: 0.005
+      top_p: 0.98
+      top_k: 50
+      dry_multiplier: 1.1
+      dry_allowed_length: 3
+      dry_penalty_last_n: 4096
+      presence_penalty: 0.15
+      frequency_penalty: 0.01
+      temperature: 0.9
+    thinking:
+      do_strip: true
       tags: ["<think>", "</think>"]
 
   do-think-silent-qwen3:
@@ -43,3 +41,14 @@ variants:
     label: "think-silent"
     thinking:
       do_strip: true
+
+  think-less-qwq32b:
+    label: "think-less"
+    model_regex: "QwQ-32B"
+    weak_logit_bias:
+      - [151668, 13.5]  # "</think>"
+    weak_defaults:
+      temperature: 0.5
+      top_k: 50
+      min_p: 0.01
+      top_p: 0.92
