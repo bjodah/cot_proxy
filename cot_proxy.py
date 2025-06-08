@@ -337,11 +337,17 @@ def _handle_models_listing(decoded):
     return decoded
 
 def _filtering_for_pseudo_model(decoded, pseudo: PseudoModel):
-    assert(pseudo.variant.thinking.do_strip)
-    # Use effective_think_start_tag and effective_think_end_tag defined earlier in the proxy function
-    start, end = pseudo.variant.thinking.tags
-    think_pattern = f"{re.escape(start)}.*?{re.escape(end)}"
-    return re.sub(think_pattern, '', decoded, flags=re.DOTALL)
+    raise NotImplementedError("using an old backend without .reasoning_content?")
+    if False:
+        # this is the original upstream impl, it's probably broken since it does regex substitution
+        # on raw json, meaning it can kill text across quoted strings.
+        assert(pseudo.variant.thinking.do_strip)
+        # Use effective_think_start_tag and effective_think_end_tag defined earlier in the proxy function
+        start, end = pseudo.variant.thinking.tags
+        think_pattern = f"{re.escape(start)}.*?{re.escape(end)}"
+        return re.sub(think_pattern, '', decoded, flags=re.DOTALL)
+    else:  # TODO:
+        ...  # we need to parse the json body and exclusively perform substitution in last message...
 
 
 def _handle_non_streaming(filtered):
@@ -354,6 +360,7 @@ def _handle_non_streaming(filtered):
         headers=[(name, value) for name, value in g.api_response.headers.items() if name.lower() not in headers_to_exclude],
         content_type=g.api_response.headers.get("Content-Type", "application/json")
     )
+
 
 def _handle_streaming(*, pseudo: PseudoModel):
     def generate_filtered_response():
@@ -548,10 +555,11 @@ def proxy(path):
         content = g.api_response.content
         decoded = content.decode("utf-8", errors="replace")
         print(f"{path=}")
+        print(f"{decoded=}")
         if path in ['models', 'v1/models']:
             final = _handle_models_listing(decoded)
-        elif pseudo is not None and pseudo.variant.thinking.do_strip:
-            final = _filtering_for_pseudo_model(decoded, pseudo=pseudo)
+        # elif pseudo is not None and pseudo.variant.thinking.do_strip:
+        #     final = _filtering_for_pseudo_model(decoded, pseudo=pseudo)
         else:
             final = decoded
         return _handle_non_streaming(final)
