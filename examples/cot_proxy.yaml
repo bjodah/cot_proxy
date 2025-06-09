@@ -15,7 +15,7 @@ variants:
       dry_multiplier: 0.5
       dry_allowed_length: 5
     thinking:
-      do_strip: false
+      do_strip: true
       tags: ["<think>", "</think>"]
 
   no-think-qwen3:  # e.g. "model": Qwen/Qwen3-30B-A3B@no-think

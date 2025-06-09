@@ -337,17 +337,26 @@ def _handle_models_listing(decoded):
     return decoded
 
 def _filtering_for_pseudo_model(decoded, pseudo: PseudoModel):
-    raise NotImplementedError("using an old backend without .reasoning_content?")
-    if False:
-        # this is the original upstream impl, it's probably broken since it does regex substitution
-        # on raw json, meaning it can kill text across quoted strings.
-        assert(pseudo.variant.thinking.do_strip)
-        # Use effective_think_start_tag and effective_think_end_tag defined earlier in the proxy function
-        start, end = pseudo.variant.thinking.tags
-        think_pattern = f"{re.escape(start)}.*?{re.escape(end)}"
-        return re.sub(think_pattern, '', decoded, flags=re.DOTALL)
-    else:  # TODO:
-        ...  # we need to parse the json body and exclusively perform substitution in last message...
+    # /v1/chat/completions on e.g. llamacpp has reasoning_content in response.
+    # but /v1/completions for e.g. FIM, will have a trailing </think> tag for e.g. Qwen3
+    # let's filter that out here.
+    try:
+        resp_body = json.loads(decoded)
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse model list response: {e}")
+    if 'choices' in resp_body:
+        last = resp_body['choices'][-1]
+        if 'text' in last:
+            last['text'] = last['text'].lstrip('\n')
+            think_close = '</think>'
+            if last['text'].startswith(think_close):
+                last['text'] = last['text'][len(think_close):]
+            last['text'] = last['text'].lstrip('\n')
+        print(f"{last=}")
+        return json.dumps(resp_body)
+    else:
+        print(f"choices not in {resp_body=}")
+        return decoded
 
 
 def _handle_non_streaming(filtered):
@@ -548,6 +557,7 @@ def proxy(path):
     # Check if response should be streamed
     is_stream = json_body.get('stream', False) if json_body else False
     logger.debug(f"Stream mode: {is_stream}")
+    logger.debug(f"Psuedo: {pseudo}")
 
     if is_stream:
         return _handle_streaming(pseudo=pseudo)
@@ -558,8 +568,8 @@ def proxy(path):
         print(f"{decoded=}")
         if path in ['models', 'v1/models']:
             final = _handle_models_listing(decoded)
-        # elif pseudo is not None and pseudo.variant.thinking.do_strip:
-        #     final = _filtering_for_pseudo_model(decoded, pseudo=pseudo)
+        elif pseudo is not None and pseudo.variant.thinking.do_strip:
+            final = _filtering_for_pseudo_model(decoded, pseudo=pseudo)
         else:
             final = decoded
         return _handle_non_streaming(final)
