@@ -4,7 +4,7 @@ split_token_model_name_label: "@"
 
 variants:
   do-think-qwen3:
-    label: "think"
+    label: "do-think"
     model_regex: "[Qq]wen3-"
     inject_at_end: "\n\n/think"
     weak_defaults:
