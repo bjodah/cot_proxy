@@ -5,7 +5,7 @@ split_token_model_name_label: "@"
 variants:
   do-think-qwen3:
     label: "do-think"
-    model_regex: "[Qq]wen3-"
+    model_regex: "^(?=.*[Qq]wen3)(?!.*-it-).*"
     inject_at_end: "\n\n/think"
     weak_defaults:
       min_p: 0.01
@@ -20,7 +20,7 @@ variants:
 
   no-think-qwen3:  # e.g. "model": Qwen/Qwen3-30B-A3B@no-think
     label: "no-think"
-    model_regex: "[Qq]wen3-"
+    model_regex: "^(?=.*[Qq]wen3)(?!.*-it-).*"
     inject_at_end: "\n\n/no_think"
     weak_defaults:
       min_p: 0.005
