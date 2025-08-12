@@ -52,3 +52,21 @@ variants:
       top_k: 50
       min_p: 0.01
       top_p: 0.92
+
+  gpt-low:
+    label: "low"
+    model_regex: ".*gpt-oss-.*"
+    weak_defaults:
+      reasoning_effort: "low"
+
+  gpt-medium:
+    label: "medium"
+    model_regex: ".*gpt-oss-.*"
+    weak_defaults:
+      reasoning_effort: "medium"
+
+  gpt-high:
+    label: "high"
+    model_regex: ".*gpt-oss-.*"
+    weak_defaults:
+      reasoning_effort: "high"
