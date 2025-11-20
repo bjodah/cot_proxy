@@ -70,3 +70,17 @@ variants:
     model_regex: ".*gpt-oss-.*"
     weak_defaults:
       reasoning_effort: "high"
+
+  glm45air:
+    label: "extract-thinking"
+    model_regex: ".*glm-4.5-air-.*"
+    thinking:
+      do_split: true
+      tags: ["<think>", "</think>"]
+    
+  seed-oss:
+    label: "extract-thinking"
+    model_regex: ".*seed-oss-.*"
+    thinking:
+      do_split: true
+      tags: ["<seed:think>", "</seed:think>"]

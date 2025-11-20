@@ -1,23 +1,25 @@
 import copy
-from functools import cached_property
-from pydantic import BaseModel, Field, field_validator
-import yaml
-from typing import Pattern, Dict, Any, Tuple, Optional
-import re
-from flask import Flask, request, Response, stream_with_context, g
-import requests
-import re
-import os
-import logging
 import json
+import logging
+import os
+import re
+import requests
 import time
+import yaml
+
+from functools import cached_property
 from typing import Any
+from typing import Pattern, Dict, Any, Tuple, Optional
 from urllib.parse import urljoin
-import re # Ensure re is available for escaping
+
+from pydantic import BaseModel, Field, field_validator
+from flask import Flask, request, Response, stream_with_context, g
+
 
 # Configuration data structures
 class ThinkingConfig(BaseModel):
-    do_strip: bool = False
+    do_strip: bool = False  # all text between thinking tags will be discarded and not passed downstream
+    do_split: bool = False  # all text between thinking tags will be put into "reasoning_content" instead of "content"
     tags: Tuple[str, str] = ('<think>', '</think>')
 
 class VariantConfig(BaseModel):
@@ -30,7 +32,7 @@ class VariantConfig(BaseModel):
     weak_logit_bias: list[tuple[int, float]] = Field(default_factory=list)
 
     @cached_property
-    def model_re(self):
+    def model_re(self) -> Pattern:
         return re.compile(self.model_regex)
 
     # @field_validator('model_regex', mode='before')
