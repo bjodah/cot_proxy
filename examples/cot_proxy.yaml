@@ -84,3 +84,20 @@ variants:
     thinking:
       do_split: true
       tags: ["<seed:think>", "</seed:think>"]
+      strip: true
+
+  devstral-2-chat:
+    label: "@chat"
+    model_regex: "([Dd]evstral-2\b|[Dd]evstral-[Ss]mall-2\b)"
+    weak_defaults:
+      temperature: 0.15
+      top_k: 30
+      top_p: 0.9
+    # the prompt below contains {today} & {yesterday}:
+    prepend_system_prompt_from_file: ./devstral-2/CHAT_SYSTEM_PROMPT.txt
+    
+  devstral-2-vibe:
+    base_off: devstral-2-chat
+    tag: "@vibe"
+    prepend_system_prompt_from_file: ./devstral-2/CHAT_SYSTEM_PROMPT.txt
+
