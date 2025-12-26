@@ -1,0 +1,3 @@
+# These are not really binary, but we don't want to see them in diff:
+CHAT_SYSTEM_PROMPT.txt binary
+VIBE_SYSTEM_PROMPT.txt binary
