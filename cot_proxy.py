@@ -27,6 +27,7 @@ class VariantConfig(BaseModel):
     label: str
     model_regex: str
     inject_at_end: str = ""
+    prepend_system_prompt_from_file: str = ""
     weak_defaults: Dict[str, Any] = Field(default_factory=dict)
     thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
     weak_logit_bias: list[tuple[int, float]] = Field(default_factory=list)
@@ -34,6 +35,17 @@ class VariantConfig(BaseModel):
     @cached_property
     def model_re(self) -> Pattern:
         return re.compile(self.model_regex)
+
+    @cached_property
+    def system_prompt(self) -> str:
+        if not self.prepend_system_prompt_from_file:
+            return ""
+        try:
+            with open(self.prepend_system_prompt_from_file, 'r') as f:
+                return f.read()
+        except Exception as e:
+            logger.error(f"Failed to read system prompt from {self.prepend_system_prompt_from_file}: {e}")
+            return ""
 
     # @field_validator('model_regex', mode='before')
     # @classmethod
@@ -212,7 +224,7 @@ logger = logging.getLogger(__name__)
 # Configure target URL
 TARGET_BASE_URL = os.getenv('COT_TARGET_BASE_URL')
 if TARGET_BASE_URL is None:
-    raise ValueError("You need to set the environment variable: COT_TAGET_BASE_URL")
+    raise ValueError("You need to set the environment variable: COT_TARGET_BASE_URL")
 if not TARGET_BASE_URL.endswith('/'):
     TARGET_BASE_URL += '/'  # Ensure trailing slash for urljoin
 
@@ -292,8 +304,6 @@ def _handle_messages(messages, append_string):
         elif isinstance(last_message.get('content'), list):
             content_list = last_message['content']
             appended_to_existing_text_part = False
-            # Iterate backwards to find the last text part to append to
-            # This handles cases like a list of text and image parts.
             for i in range(len(content_list) - 1, -1, -1):
                 part = content_list[i]
                 if isinstance(part, dict) and part.get('type') == 'text' and 'text' in part:
@@ -303,20 +313,45 @@ def _handle_messages(messages, append_string):
                     break
 
             if not appended_to_existing_text_part:
-                # If no suitable text part was found (e.g. list of images, or empty list),
-                # add a new text part.
                 content_list.append({'type': 'text', 'text': append_string})
                 logger.debug(f"Added new text part to user message content list: {append_string}")
         else:
-            # Content is not a string or list (e.g., None or unexpected type)
-            # Set the content to the append_string.
             original_content_type = type(last_message.get('content')).__name__
             last_message['content'] = append_string
             logger.warning(f"Last user message content was '{original_content_type}'. Overwritten with new string content: {append_string}")
     else:
-        # Last message is not user: insert a new user message
         messages.append({"role": "user", "content": append_string})
         logger.debug(f"Last message not 'user'. Inserted new user message with content: {append_string}")
+
+def _handle_system_prompt(messages, system_prompt):
+    if not system_prompt:
+        return
+
+    if not messages or messages[0].get('role') != 'system':
+        messages.insert(0, {"role": "system", "content": system_prompt})
+        logger.debug(f"Prepended system prompt to messages")
+    else:
+        existing_system = messages[0]
+        if isinstance(existing_system.get('content'), str):
+            existing_system['content'] = system_prompt + '\n\n' + existing_system['content']
+            logger.debug(f"Prepended system prompt to existing system message")
+        elif isinstance(existing_system.get('content'), list):
+            text_part = None
+            for part in existing_system['content']:
+                if isinstance(part, dict) and part.get('type') == 'text' and 'text' in part:
+                    text_part = part
+                    break
+            if text_part:
+                text_part['text'] = system_prompt + '\n\n' + text_part['text']
+                logger.debug(f"Prepended system prompt to existing system message text part")
+            else:
+                existing_system['content'].insert(0, {'type': 'text', 'text': system_prompt})
+                logger.debug(f"Prepended system prompt as new text part to existing system message")
+        else:
+            original_content_type = type(existing_system.get('content')).__name__
+            existing_system['content'] = system_prompt
+            logger.warning(f"Existing system message content was '{original_content_type}'. Overwritten with new string content")
+
 
 def _handle_models_listing(decoded):
     try:
@@ -469,6 +504,13 @@ def proxy(path):
         if pseudo:
             logger.info(f"Using think tags for model '{pseudo.variant.name}': START='{pseudo.variant.thinking.tags[0]}', END='{pseudo.variant.thinking.tags[1]}'")
             logger.info(f"Think tag filtering enabled: {pseudo.variant.thinking.do_strip} for model '{pseudo.variant.name}'")
+
+            system_prompt = pseudo.variant.system_prompt
+            if system_prompt:
+                if 'messages' not in json_body or not json_body['messages']:
+                    json_body.setdefault('messages', [])
+                _handle_system_prompt(json_body['messages'], system_prompt)
+
             append_string = pseudo.variant.inject_at_end
             if 'messages' not in json_body or not json_body['messages']:
                 # No messages: create a new user message with the string
