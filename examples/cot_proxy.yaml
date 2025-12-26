@@ -1,0 +1,86 @@
+log_level: debug  # "info" or "debug"
+api_request_timeout: 1250
+split_token_model_name_label: "@"
+
+variants:
+  do-think-qwen3:
+    label: "do-think"
+    model_regex: "^(?=.*[Qq]wen3)(?!.*-it-).*"
+    inject_at_end: "\n\n/think"
+    weak_defaults:
+      min_p: 0.01
+      top_p: 0.95
+      top_k: 30 
+      temperature: 0.6
+      dry_multiplier: 0.5
+      dry_allowed_length: 5
+    thinking:
+      do_strip: true
+      tags: ["<think>", "</think>"]
+
+  no-think-qwen3:  # e.g. "model": Qwen/Qwen3-30B-A3B@no-think
+    label: "no-think"
+    model_regex: "^(?=.*[Qq]wen3)(?!.*-it-).*"
+    inject_at_end: "\n\n/no_think"
+    weak_defaults:
+      min_p: 0.005
+      top_p: 0.98
+      top_k: 50
+      dry_multiplier: 1.1
+      dry_allowed_length: 3
+      dry_penalty_last_n: 4096
+      presence_penalty: 0.15
+      frequency_penalty: 0.01
+      temperature: 0.9
+    thinking:
+      do_strip: true
+      tags: ["<think>", "</think>"]
+
+  do-think-silent-qwen3:
+    base_off: "do-think-qwen3"
+    label: "think-silent"
+    thinking:
+      do_strip: true
+
+  think-less-qwq32b:
+    label: "think-less"
+    model_regex: "QwQ-32B"
+    weak_logit_bias:
+      - [151668, 13.5]  # "</think>"
+    weak_defaults:
+      temperature: 0.5
+      top_k: 50
+      min_p: 0.01
+      top_p: 0.92
+
+  gpt-low:
+    label: "low"
+    model_regex: ".*gpt-oss-.*"
+    weak_defaults:
+      reasoning_effort: "low"
+
+  gpt-medium:
+    label: "medium"
+    model_regex: ".*gpt-oss-.*"
+    weak_defaults:
+      reasoning_effort: "medium"
+
+  gpt-high:
+    label: "high"
+    model_regex: ".*gpt-oss-.*"
+    weak_defaults:
+      reasoning_effort: "high"
+
+  glm45air:
+    label: "extract-thinking"
+    model_regex: ".*glm-4.5-air-.*"
+    thinking:
+      do_split: true
+      tags: ["<think>", "</think>"]
+    
+  seed-oss:
+    label: "extract-thinking"
+    model_regex: ".*seed-oss-.*"
+    thinking:
+      do_split: true
+      tags: ["<seed:think>", "</seed:think>"]
