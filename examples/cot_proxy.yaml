@@ -98,6 +98,6 @@ variants:
     
   devstral-2-vibe:
     base_off: devstral-2-chat
-    tag: "@vibe"
+    label: "@vibe"
     prepend_system_prompt_from_file: ./devstral-2/CHAT_SYSTEM_PROMPT.txt
 
