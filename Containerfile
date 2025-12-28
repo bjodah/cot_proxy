@@ -21,9 +21,5 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Expose the application port
 EXPOSE 3000
 
-# Set default environment variables
-ENV DEBUG=false
-ENV LLM_PARAMS=
-
 # Run with Gunicorn
 ENTRYPOINT ["uv", "run", "--with", "gunicorn", "gunicorn"]
