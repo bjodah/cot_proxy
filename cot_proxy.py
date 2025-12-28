@@ -220,7 +220,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
+logger.info(f"{log_level=}")
 # Configure target URL
 TARGET_BASE_URL = os.getenv('COT_TARGET_BASE_URL')
 if TARGET_BASE_URL is None:
@@ -273,7 +273,6 @@ def resolve_variant(model_name: str) -> Optional[PseudoModel]:
         for variant in config.variants.values():
             if variant.label != label:
                 continue
-            print(f"{variant.model_regex=}")
             if variant.model_re.search(base_model):
                 return PseudoModel(upstream_model_name=base_model, variant=variant)
     return None
@@ -608,8 +607,6 @@ def proxy(path):
     else:
         content = g.api_response.content
         decoded = content.decode("utf-8", errors="replace")
-        print(f"{path=}")
-        print(f"{decoded=}")
         if path in ['models', 'v1/models']:
             final = _handle_models_listing(decoded)
         elif pseudo is not None and pseudo.variant.thinking.do_strip:
