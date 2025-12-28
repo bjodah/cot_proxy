@@ -5,6 +5,8 @@ import logging
 import responses
 from unittest.mock import patch
 
+from cot_proxy import VariantConfig, ThinkingConfig, PseudoModel
+
 # Default think tags from cot_proxy.py if no env vars are set
 DEFAULT_CODE_START_TAG = '<think>'
 DEFAULT_CODE_END_TAG = '</think>'
@@ -78,93 +80,115 @@ def test_proxy_non_streaming_think_tag_removal_default_tags(client, mocker, capl
     caplog.set_level(logging.DEBUG)
     mocked_target_base = "http://fake-target-nonstream/"
     mocker.patch('cot_proxy.TARGET_BASE_URL', mocked_target_base)
-    mocker.patch.dict(os.environ, {
-        "LLM_PARAMS": "model=nonstream-model,enable_think_tag_filtering=true"
-    }, clear=True)
-    # Ensure module defaults are the code defaults for this test
-    # mocker.patch('cot_proxy.DEFAULT_THINK_START_TAG', DEFAULT_CODE_START_TAG)
-    # mocker.patch('cot_proxy.DEFAULT_THINK_END_TAG', DEFAULT_CODE_END_TAG)
 
-    raw_content_from_target = f"Visible {DEFAULT_CODE_START_TAG}secret thoughts{DEFAULT_CODE_END_TAG} content."
-    responses.add(
-        responses.POST,
-        f"{mocked_target_base}v1/chat/completions",
-        body=raw_content_from_target,
-        status=200,
-        content_type="application/json"
+    variant = VariantConfig(
+        name='test-variant',
+        label='test',
+        model_regex='test-model',
+        inject_at_end='',
+        weak_defaults={},
+        thinking=ThinkingConfig(do_strip=True, tags=(DEFAULT_CODE_START_TAG, DEFAULT_CODE_END_TAG)),
+        weak_logit_bias=[]
     )
 
-    request_body = {"model": "nonstream-model", "stream": False, "messages": [{"role": "user", "content": "Hello"}]}
-    proxy_response = client.post("/v1/chat/completions", json=request_body)
+    pseudo = PseudoModel(upstream_model_name='test-model', variant=variant)
 
-    assert proxy_response.status_code == 200
-    assert proxy_response.data.decode('utf-8') == "Visible  content."
+    with patch('cot_proxy.resolve_variant', return_value=pseudo):
+        raw_content_from_target = f"Visible {DEFAULT_CODE_START_TAG}secret thoughts{DEFAULT_CODE_END_TAG} content."
+        responses.add(
+            responses.POST,
+            f"{mocked_target_base}v1/chat/completions",
+            body=raw_content_from_target,
+            status=200,
+            content_type="application/json"
+        )
 
-    expected_log = f"Using think tags for model 'nonstream-model': START='{DEFAULT_CODE_START_TAG}', END='{DEFAULT_CODE_END_TAG}'"
+        request_body = {"model": "test-model@test", "stream": False, "messages": [{"role": "user", "content": "Hello"}]}
+        proxy_response = client.post("/v1/chat/completions", json=request_body)
+
+        assert proxy_response.status_code == 200
+        assert proxy_response.data.decode('utf-8') == "Visible  content."
+
+    expected_log = f"Using think tags for model 'test-variant': START='{DEFAULT_CODE_START_TAG}', END='{DEFAULT_CODE_END_TAG}'"
     assert expected_log in caplog.text
     assert "Non-streaming response content: Visible  content." in caplog.text
 
 
 @responses.activate
 def test_proxy_non_streaming_think_tag_removal_llm_params_tags(client, mocker, caplog):
-    """Test non-streaming think tag removal with tags from LLM_PARAMS."""
+    """Test non-streaming think tag removal with custom tags."""
     custom_start = "<llm_s>"
     custom_end = "</llm_e>"
     mocked_target_base = "http://fake-target-nonstream/"
     mocker.patch('cot_proxy.TARGET_BASE_URL', mocked_target_base)
-    mocker.patch.dict(os.environ, {
-        "LLM_PARAMS": f"model=llm-param-model,think_tag_start={custom_start},think_tag_end={custom_end},enable_think_tag_filtering=true",
-    }, clear=True)
 
-    raw_content_from_target = f"Data {custom_start}hidden{custom_end} visible."
-    responses.add(
-        responses.POST,
-        f"{mocked_target_base}v1/chat/completions",
-        body=raw_content_from_target,
-        status=200,
-        content_type="application/json"
+    variant = VariantConfig(
+        name='test-variant',
+        label='custom',
+        model_regex='test-model',
+        inject_at_end='',
+        weak_defaults={},
+        thinking=ThinkingConfig(do_strip=True, tags=(custom_start, custom_end)),
+        weak_logit_bias=[]
     )
 
-    request_body = {"model": "llm-param-model", "stream": False, "messages": [{"role": "user", "content": "Hello"}]}
-    proxy_response = client.post("/v1/chat/completions", json=request_body)
+    pseudo = PseudoModel(upstream_model_name='test-model', variant=variant)
 
-    assert proxy_response.status_code == 200
-    assert proxy_response.data.decode('utf-8') == "Data  visible."
-    expected_log = f"Using think tags for model 'llm-param-model': START='{custom_start}', END='{custom_end}'"
-    assert expected_log in caplog.text
+    with patch('cot_proxy.resolve_variant', return_value=pseudo):
+        raw_content_from_target = f"Data {custom_start}hidden{custom_end} visible."
+        responses.add(
+            responses.POST,
+            f"{mocked_target_base}v1/chat/completions",
+            body=raw_content_from_target,
+            status=200,
+            content_type="application/json"
+        )
+
+        request_body = {"model": "test-model@custom", "stream": False, "messages": [{"role": "user", "content": "Hello"}]}
+        proxy_response = client.post("/v1/chat/completions", json=request_body)
+
+        assert proxy_response.status_code == 200
+        assert proxy_response.data.decode('utf-8') == "Data  visible."
+        expected_log = f"Using think tags for model 'test-model@custom': START='{custom_start}', END='{custom_end}'"
+        assert expected_log in caplog.text
 
 @responses.activate
 def test_proxy_non_streaming_think_tag_removal_global_env_tags(client, mocker, caplog):
-    """Test non-streaming think tag removal with global THINK_TAG/THINK_END_TAG."""
+    """Test non-streaming think tag removal with custom tags."""
     env_start = "<env_s>"
     env_end = "</env_e>"
     mocked_target_base = "http://fake-target-nonstream/"
     mocker.patch('cot_proxy.TARGET_BASE_URL', mocked_target_base)
-    mocker.patch.dict(os.environ, {
-        "THINK_TAG": env_start,
-        "THINK_END_TAG": env_end,
-        "LLM_PARAMS": "model=global-env-model,enable_think_tag_filtering=true"
-    }, clear=True)
-    # Patch module-level defaults so the THINK_TAG env vars are picked up
-    # mocker.patch('cot_proxy.DEFAULT_THINK_START_TAG', env_start)
-    # mocker.patch('cot_proxy.DEFAULT_THINK_END_TAG', env_end)
 
-    raw_content_from_target = f"Prefix {env_start}thoughts{env_end} Suffix."
-    responses.add(
-        responses.POST,
-        f"{mocked_target_base}v1/chat/completions",
-        body=raw_content_from_target,
-        status=200,
-        content_type="application/json"
+    variant = VariantConfig(
+        name='test-variant',
+        label='custom',
+        model_regex='test-model',
+        inject_at_end='',
+        weak_defaults={},
+        thinking=ThinkingConfig(do_strip=True, tags=(env_start, env_end)),
+        weak_logit_bias=[]
     )
 
-    request_body = {"model": "global-env-model", "stream": False, "messages": [{"role": "user", "content": "Hello"}]}
-    proxy_response = client.post("/v1/chat/completions", json=request_body)
+    pseudo = PseudoModel(upstream_model_name='test-model', variant=variant)
 
-    assert proxy_response.status_code == 200
-    assert proxy_response.data.decode('utf-8') == "Prefix  Suffix."
-    expected_log = f"Using think tags for model 'global-env-model': START='{env_start}', END='{env_end}'"
-    assert expected_log in caplog.text
+    with patch('cot_proxy.resolve_variant', return_value=pseudo):
+        raw_content_from_target = f"Prefix {env_start}thoughts{env_end} Suffix."
+        responses.add(
+            responses.POST,
+            f"{mocked_target_base}v1/chat/completions",
+            body=raw_content_from_target,
+            status=200,
+            content_type="application/json"
+        )
+
+        request_body = {"model": "test-model@env", "stream": False, "messages": [{"role": "user", "content": "Hello"}]}
+        proxy_response = client.post("/v1/chat/completions", json=request_body)
+
+        assert proxy_response.status_code == 200
+        assert proxy_response.data.decode('utf-8') == "Prefix  Suffix."
+        expected_log = f"Using think tags for model 'env': START='{env_start}', END='{env_end}'"
+        assert expected_log in caplog.text
 
 @responses.activate
 def test_proxy_non_streaming_no_stream_key_in_request(client, mocker, caplog, enable_debug):
@@ -172,31 +196,38 @@ def test_proxy_non_streaming_no_stream_key_in_request(client, mocker, caplog, en
     caplog.set_level(logging.DEBUG)
     mocked_target_base = "http://fake-target-nonstream/"
     mocker.patch('cot_proxy.TARGET_BASE_URL', mocked_target_base)
-    mocker.patch.dict(os.environ, {
-        "LLM_PARAMS": "model=no-stream-key-model,enable_think_tag_filtering=true"
-    }, clear=True)
-    # Ensure module defaults are the code defaults for this test
-    # mocker.patch('cot_proxy.DEFAULT_THINK_START_TAG', DEFAULT_CODE_START_TAG)
-    # mocker.patch('cot_proxy.DEFAULT_THINK_END_TAG', DEFAULT_CODE_END_TAG)
 
-    raw_content_from_target = f"Content {DEFAULT_CODE_START_TAG}stuff{DEFAULT_CODE_END_TAG} end."
-    responses.add(
-        responses.POST,
-        f"{mocked_target_base}v1/chat/completions",
-        body=raw_content_from_target,
-        status=200,
-        content_type="application/json"
+    variant = VariantConfig(
+        name='test-variant',
+        label='custom',
+        model_regex='test-model',
+        inject_at_end='',
+        weak_defaults={},
+        thinking=ThinkingConfig(do_strip=True, tags=(DEFAULT_CODE_START_TAG, DEFAULT_CODE_END_TAG)),
+        weak_logit_bias=[]
     )
 
-    # 'stream' key is missing, should default to non-streaming
-    request_body = {"model": "no-stream-key-model", "messages": [{"role": "user", "content": "Hello"}]}
-    proxy_response = client.post("/v1/chat/completions", json=request_body)
+    pseudo = PseudoModel(upstream_model_name='test-model', variant=variant)
 
-    assert proxy_response.status_code == 200
-    assert proxy_response.data.decode('utf-8') == "Content  end."
-    assert "Non-streaming response content:" in caplog.text # Confirms non-streaming path
-    # Stream mode log should indicate false
-    assert "Stream mode: False" in caplog.text
+    with patch('cot_proxy.resolve_variant', return_value=pseudo):
+        raw_content_from_target = f"Content {DEFAULT_CODE_START_TAG}stuff{DEFAULT_CODE_END_TAG} end."
+        responses.add(
+            responses.POST,
+            f"{mocked_target_base}v1/chat/completions",
+            body=raw_content_from_target,
+            status=200,
+            content_type="application/json"
+        )
+
+        # 'stream' key is missing, should default to non-streaming
+        request_body = {"model": "test-model@nostream", "messages": [{"role": "user", "content": "Hello"}]}
+        proxy_response = client.post("/v1/chat/completions", json=request_body)
+
+        assert proxy_response.status_code == 200
+        assert proxy_response.data.decode('utf-8') == "Content  end."
+        assert "Non-streaming response content:" in caplog.text # Confirms non-streaming path
+        # Stream mode log should indicate false
+        assert "Stream mode: False" in caplog.text
 
 
 @responses.activate
@@ -205,12 +236,6 @@ def test_proxy_non_streaming_no_json_body(client, mocker, caplog, enable_debug):
     caplog.set_level(logging.DEBUG)
     mocked_target_base = "http://fake-target-nonstream/"
     mocker.patch('cot_proxy.TARGET_BASE_URL', mocked_target_base)
-    mocker.patch.dict(os.environ, {
-        "LLM_PARAMS": "model=default,enable_think_tag_filtering=true" # For the second part of the test
-    }, clear=True)
-    # Ensure module defaults are the code defaults for this test
-    # mocker.patch('cot_proxy.DEFAULT_THINK_START_TAG', DEFAULT_CODE_START_TAG)
-    # mocker.patch('cot_proxy.DEFAULT_THINK_END_TAG', DEFAULT_CODE_END_TAG)
 
     target_response_body = "Simple GET response, no tags involved."
     responses.add(
@@ -230,11 +255,3 @@ def test_proxy_non_streaming_no_json_body(client, mocker, caplog, enable_debug):
     # is_stream is determined by json_body.get('stream', False) if json_body else False
     # So if no json_body, is_stream is False.
     assert "Stream mode: False" in caplog.text
-    # The non-streaming logic for think tag removal is only hit if json_body was present
-    # to determine effective_think_start_tag etc.
-    # If no json_body, the proxy function's main try block for requests.request is hit,
-    # then it checks g.api_response.status_code. If < 400, it proceeds to the
-    # `is_stream` check. If `is_stream` is false (due to no json_body),
-    # it decodes g.api_response.content.
-    # The `effective_think_start_tag` would be the global defaults in this case.
-    # So, if the response *did* contain default tags, they *would* be stripped.
