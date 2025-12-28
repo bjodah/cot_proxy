@@ -384,12 +384,26 @@ def _filtering_for_pseudo_model(decoded, pseudo: PseudoModel):
         return decoded
     if 'choices' in resp_body:
         last = resp_body['choices'][-1]
+        think_start, think_end = pseudo.variant.thinking.tags
+        # Handle /v1/completions format (has 'text' field)
         if 'text' in last:
             last['text'] = last['text'].lstrip('\n')
-            think_close = '</think>'
-            if last['text'].startswith(think_close):
-                last['text'] = last['text'][len(think_close):]
+            if last['text'].startswith(think_end):
+                last['text'] = last['text'][len(think_end):]
             last['text'] = last['text'].lstrip('\n')
+        # Handle /v1/chat/completions format (has 'message' -> 'content' field)
+        elif ('message' in last and
+              'content' in last['message'] and
+              'reasoning_content' not in last['message']):
+            content = last['message']['content']
+            if isinstance(content, str):
+                # Strip think tags from content
+                if think_start in content:
+                    parts = content.split(think_start, 1)
+                    content = parts[0]
+                    if think_end in parts[1]:
+                        content += parts[1].split(think_end, 1)[1]
+                last['message']['content'] = content
         return json.dumps(resp_body)
     else:
         logger.debug(f"choices not in {resp_body=}")
