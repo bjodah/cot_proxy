@@ -379,7 +379,9 @@ def _filtering_for_pseudo_model(decoded, pseudo: PseudoModel):
     try:
         resp_body = json.loads(decoded)
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse model list response: {e}")
+        logger.error((f"Failed to parse reponse as json: {e}\n"
+                      f"{len(decoded)=} {decoded[:10]=}"))
+        return decoded
     if 'choices' in resp_body:
         last = resp_body['choices'][-1]
         if 'text' in last:
@@ -388,10 +390,9 @@ def _filtering_for_pseudo_model(decoded, pseudo: PseudoModel):
             if last['text'].startswith(think_close):
                 last['text'] = last['text'][len(think_close):]
             last['text'] = last['text'].lstrip('\n')
-        print(f"{last=}")
         return json.dumps(resp_body)
     else:
-        print(f"choices not in {resp_body=}")
+        logger.debug(f"choices not in {resp_body=}")
         return decoded
 
 

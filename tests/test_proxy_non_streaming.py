@@ -98,7 +98,7 @@ def test_proxy_non_streaming_think_tag_removal_default_tags(client, mocker, capl
         responses.add(
             responses.POST,
             f"{mocked_target_base}v1/chat/completions",
-            body=raw_content_from_target,
+            body=_json_string_of_response(raw_content_from_target),
             status=200,
             content_type="application/json"
         )
@@ -107,7 +107,7 @@ def test_proxy_non_streaming_think_tag_removal_default_tags(client, mocker, capl
         proxy_response = client.post("/v1/chat/completions", json=request_body)
 
         assert proxy_response.status_code == 200
-        assert proxy_response.data.decode('utf-8') == "Visible  content."
+        assert json.loads(proxy_response.data.decode('utf-8'))['choices'][0]["message"]["content"] == "Visible  content."
 
     expected_log = f"Using think tags for model 'test-variant': START='{DEFAULT_CODE_START_TAG}', END='{DEFAULT_CODE_END_TAG}'"
     assert expected_log in caplog.text
@@ -139,7 +139,7 @@ def test_proxy_non_streaming_think_tag_removal_llm_params_tags(client, mocker, c
         responses.add(
             responses.POST,
             f"{mocked_target_base}v1/chat/completions",
-            body=raw_content_from_target,
+            body=_json_string_of_response(raw_content_from_target),
             status=200,
             content_type="application/json"
         )
@@ -148,7 +148,7 @@ def test_proxy_non_streaming_think_tag_removal_llm_params_tags(client, mocker, c
         proxy_response = client.post("/v1/chat/completions", json=request_body)
 
         assert proxy_response.status_code == 200
-        assert proxy_response.data.decode('utf-8') == "Data  visible."
+        assert json.loads(proxy_response.data.decode('utf-8'))['choices'][0]["message"]["content"] == "Data  visible."
         expected_log = f"Using think tags for model 'test-model@custom': START='{custom_start}', END='{custom_end}'"
         assert expected_log in caplog.text
 
@@ -177,7 +177,7 @@ def test_proxy_non_streaming_think_tag_removal_global_env_tags(client, mocker, c
         responses.add(
             responses.POST,
             f"{mocked_target_base}v1/chat/completions",
-            body=raw_content_from_target,
+            body=_json_string_of_response(raw_content_from_target),
             status=200,
             content_type="application/json"
         )
@@ -186,9 +186,16 @@ def test_proxy_non_streaming_think_tag_removal_global_env_tags(client, mocker, c
         proxy_response = client.post("/v1/chat/completions", json=request_body)
 
         assert proxy_response.status_code == 200
-        assert proxy_response.data.decode('utf-8') == "Prefix  Suffix."
+        assert json.loads(proxy_response.data.decode('utf-8'))['choices'][0]["message"]["content"] == "Prefix  Suffix."
         expected_log = f"Using think tags for model 'env': START='{env_start}', END='{env_end}'"
         assert expected_log in caplog.text
+
+def _json_string_of_response(content: str) -> str:
+    body = {
+        'id': "foobar",
+        'choices': [{"message": dict(role='assistant', content=content)}]
+    }
+    return json.dumps(body)
 
 @responses.activate
 def test_proxy_non_streaming_no_stream_key_in_request(client, mocker, caplog, enable_debug):
@@ -214,7 +221,7 @@ def test_proxy_non_streaming_no_stream_key_in_request(client, mocker, caplog, en
         responses.add(
             responses.POST,
             f"{mocked_target_base}v1/chat/completions",
-            body=raw_content_from_target,
+            body=_json_string_of_response(raw_content_from_target),
             status=200,
             content_type="application/json"
         )
@@ -224,7 +231,7 @@ def test_proxy_non_streaming_no_stream_key_in_request(client, mocker, caplog, en
         proxy_response = client.post("/v1/chat/completions", json=request_body)
 
         assert proxy_response.status_code == 200
-        assert proxy_response.data.decode('utf-8') == "Content  end."
+        assert json.loads(proxy_response.data.decode('utf-8'))['choices'][0]["message"]["content"] == "Content  end."
         assert "Non-streaming response content:" in caplog.text # Confirms non-streaming path
         # Stream mode log should indicate false
         assert "Stream mode: False" in caplog.text
